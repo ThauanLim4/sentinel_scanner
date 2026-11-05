@@ -55,36 +55,59 @@ class MinerDetector:
 
     def sample(self, duration: float = 20.0, interval: float = 2.0, cancel: Callable[[], bool] | None = None,
                progress: Callable[[float], None] | None = None) -> dict:
-        """Mede CPU (e GPU) por processo durante `duration` segundos. Retorna e guarda as estatísticas."""
+        """Mede CPU (e GPU) por processo durante `duration` segundos. Retorna e guarda as estatísticas.
+
+        A CPU é calculada por DELTA do tempo de CPU (``process.cpu_times()``) dividido
+        pelo tempo real decorrido e pelo número de CPUs lógicas. Isso evita os zeros
+        espúrios de ``cpu_percent()`` em intervalos curtos/primeira amostra e contabiliza
+        corretamente processos com vários threads/núcleos.
+        """
         if psutil is None:
             raise RuntimeError("psutil não está instalado.")
+        if duration <= 0 or interval <= 0:
+            raise ValueError("duration e interval devem ser maiores que zero.")
         n = psutil.cpu_count() or 1
         procs = {p.pid: p for p in psutil.process_iter()}
-        for p in procs.values():
+        last_wall = time.monotonic()
+        last_cpu: dict[int, float] = {}
+        for pid, p in procs.items():
             try:
-                p.cpu_percent(None)
+                t = p.cpu_times()
+                last_cpu[pid] = float(t.user) + float(t.system)
             except psutil.Error:
                 pass
         cpu: dict[tuple, list[float]] = {}
         gpu: dict[tuple, list[float]] = {}
-        steps = max(1, int(duration / interval))
+        steps = max(1, int(round(duration / interval)))
         keys: dict[int, tuple] = {}
         for i in range(steps):
             if cancel and cancel():
                 break
             time.sleep(interval)
+            now = time.monotonic()
+            elapsed = max(now - last_wall, 1e-9)
             g = self._gpu_usage()
             for pid, p in list(procs.items()):
                 try:
+                    t = p.cpu_times()
+                    total = float(t.user) + float(t.system)
+                    previous = last_cpu.get(pid)
+                    last_cpu[pid] = total
+                    pct = 0.0 if previous is None else (total - previous) / elapsed / n * 100.0
                     key = keys.setdefault(pid, (pid, p.create_time()))
-                    cpu.setdefault(key, []).append(p.cpu_percent(None) / n)
+                    cpu.setdefault(key, []).append(max(0.0, pct))
                     gpu.setdefault(key, []).append(g.get(pid, 0.0))
                 except psutil.Error:
                     procs.pop(pid, None)
+                    last_cpu.pop(pid, None)
+                    keys.pop(pid, None)
+            last_wall = now
             if progress:
                 progress((i + 1) / steps)
         self.stats = {}
         for key, vals in cpu.items():
+            if not vals:
+                continue
             gv = gpu.get(key, [0.0])
             self.stats[key] = {
                 "samples": len(vals), "cpu_avg": statistics.fmean(vals),
@@ -124,22 +147,29 @@ class MinerDetector:
             ff = file_findings.get(norm(info.exe)) if info.exe else None
             if ff and any(e.code.startswith("miner") for e in ff.evidences):
                 f.add("miner_file", "O executável contém strings/protocolos de mineração", 40, "Minerador"); fam.add("file")
-            st = self.stats.get((info.pid, info.create_time))
-            if st:
-                if st["cpu_frac"] >= 0.8 and st["samples"] >= 3:
-                    f.add("miner_cpu", f"CPU sustentada ({st['cpu_avg']:.0f}% do total) durante a amostragem", 10); fam.add("resource")
-                if st["gpu_frac"] >= 0.8 and st["samples"] >= 3:
-                    f.add("miner_gpu", f"GPU sustentada ({st['gpu_avg']:.0f}%) durante a amostragem", 8); fam.add("resource")
+            # Persistência é um indicador independente: vale mesmo quando o processo em si
+            # não tem outros achados. Sozinha (ou apenas com CPU/GPU) não gera alerta.
+            if info.exe and norm(info.exe) in startup_paths:
+                f.add("miner_persist", "Possui mecanismo de inicialização automática", 8); fam.add("persistence")
+            # Local do executável (temp/lixeira/binário removido) só conta quando já há
+            # persistência ou outra família: executar de temp, sozinho, é comum em apps.
             pf = info.finding
             if pf and fam - {"resource"}:
                 if any(e.code in ("proc_mimic", "proc_lookalike") for e in pf.evidences):
                     f.add("miner_disguise", "Processo disfarçado de componente do Windows", 15); fam.add("disguise")
                 if any(e.code in ("proc_temp", "proc_deleted", "proc_recycle") for e in pf.evidences):
                     f.add("miner_hidden_loc", "Executando de local incomum/ocultando o binário", 10); fam.add("disguise")
-                if info.exe and norm(info.exe) in startup_paths:
-                    f.add("miner_persist", "Possui mecanismo de inicialização automática", 8); fam.add("persistence")
-            if not fam or fam == {"resource"}:
-                continue  # CPU/GPU alta isolada não é evidência
+            # CPU/GPU só somam quando já existe uma família tipicamente ligada a mineração
+            # (linha de comando, rede, arquivo ou disfarce). Recurso + persistência é
+            # compatível com qualquer aplicativo legítimo que inicia com o Windows.
+            st = self.stats.get((info.pid, info.create_time))
+            if st and fam & {"cmdline", "network", "file", "disguise"}:
+                if st["cpu_frac"] >= 0.8 and st["samples"] >= 3:
+                    f.add("miner_cpu", f"CPU sustentada ({st['cpu_avg']:.0f}% do total) durante a amostragem", 10); fam.add("resource")
+                if st["gpu_frac"] >= 0.8 and st["samples"] >= 3:
+                    f.add("miner_gpu", f"GPU sustentada ({st['gpu_avg']:.0f}%) durante a amostragem", 8); fam.add("resource")
+            if not fam or fam <= {"resource", "persistence"}:
+                continue  # CPU/GPU/persistência sem outro indicador não é evidência
             f.extra["families"] = sorted(fam)
             f.finalize()
             if len(fam) < 2:

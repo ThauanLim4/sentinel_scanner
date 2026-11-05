@@ -26,11 +26,34 @@ def run_powershell(script: str, stdin_text: str | None = None, timeout: int = 60
     nunca concatenados no script (evita injeção de comandos)."""
     if not IS_WINDOWS:
         raise PowerShellError("PowerShell só está disponível no Windows.")
-    return subprocess.run(
-        [powershell_exe(), "-NoProfile", "-NonInteractive", "-Command", script],
-        input=stdin_text, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=timeout, env=env, creationflags=CREATE_NO_WINDOW,
-    )
+    try:
+        return subprocess.run(
+            [powershell_exe(), "-NoProfile", "-NonInteractive", "-Command", script],
+            input=stdin_text, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=timeout, env=env, creationflags=CREATE_NO_WINDOW,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise PowerShellError(f"PowerShell excedeu o tempo limite de {timeout}s.") from exc
+    except OSError as exc:
+        raise PowerShellError(f"Falha ao executar o PowerShell: {exc}") from exc
+
+
+def _extract_json(text: str) -> Any:
+    """Extrai JSON mesmo quando o PowerShell imprime avisos antes da saída."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Alguns cmdlets emitem warnings no stdout antes do JSON.
+        for i, ch in enumerate(text):
+            if ch in "[{":
+                try:
+                    return json.loads(text[i:])
+                except json.JSONDecodeError:
+                    continue
+        raise
 
 
 def run_powershell_json(script: str, stdin_text: str | None = None, timeout: int = 60) -> Any:
@@ -41,6 +64,6 @@ def run_powershell_json(script: str, stdin_text: str | None = None, timeout: int
     if not out:
         return None
     try:
-        return json.loads(out)
+        return _extract_json(out)
     except json.JSONDecodeError as exc:
         raise PowerShellError(f"Saída JSON inválida: {exc}") from exc

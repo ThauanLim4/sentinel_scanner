@@ -38,6 +38,17 @@ DOCUMENT_EXT = {
     ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".mp3", ".mp4", ".avi", ".odt",
 }
 
+# Extensões que a limpeza automática NUNCA deve apagar, mesmo dentro de diretórios
+# temporários: documentos, mídia, arquivos compactados e fontes de projetos.
+PERSONAL_EXT = DOCUMENT_EXT | {
+    ".wav", ".flac", ".aac", ".ogg", ".m4a", ".mkv", ".mov", ".wmv", ".webm",
+    ".tif", ".tiff", ".webp", ".heic", ".svg", ".psd", ".raw",
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz",
+    ".py", ".pyw", ".js", ".ts", ".tsx", ".jsx", ".java", ".cs", ".cpp", ".c", ".h", ".hpp",
+    ".go", ".rs", ".rb", ".php", ".html", ".htm", ".css", ".scss", ".json", ".xml",
+    ".yaml", ".yml", ".toml", ".ini", ".cfg", ".md", ".rst", ".sql", ".db", ".sqlite",
+}
+
 # Nomes de processos do Windows frequentemente imitados por malware.
 SYSTEM_PROCESS_NAMES = {
     "svchost.exe", "explorer.exe", "csrss.exe", "lsass.exe", "winlogon.exe",

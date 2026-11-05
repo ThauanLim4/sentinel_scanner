@@ -41,7 +41,9 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
+            # FULL garante que um commit esteja no disco antes de a quarentena remover
+            # o arquivo original (proteção contra queda de energia/interrupção).
+            self._conn.execute("PRAGMA synchronous=FULL")
             self._conn.executescript(SCHEMA)
             self._conn.commit()
 
@@ -118,12 +120,31 @@ class Database:
             self._conn.commit()
 
     # --- quarentena -------------------------------------------------------
-    def add_quarantine(self, rec: dict):
-        self._exec("INSERT INTO quarantine(id,original_path,stored_name,sha256,size,ts,evidence_json,meta_json) "
-                   "VALUES(?,?,?,?,?,?,?,?)",
-                   (rec["id"], rec["original_path"], rec["stored_name"], rec["sha256"], rec["size"],
+    def add_quarantine(self, rec: dict, status: str = "quarantined"):
+        """Insere um registro. Use ``status="pending"`` ANTES de copiar o arquivo
+        (write-ahead), para que uma interrupção não deixe o item sem registro."""
+        self._exec("INSERT INTO quarantine(id,original_path,stored_name,sha256,size,ts,evidence_json,meta_json,status) "
+                   "VALUES(?,?,?,?,?,?,?,?,?)",
+                   (rec["id"], rec["original_path"], rec["stored_name"], rec.get("sha256", ""), rec.get("size", 0),
                     now(), json.dumps(rec.get("evidence", []), ensure_ascii=False),
-                    json.dumps(rec.get("meta", {}))))
+                    json.dumps(rec.get("meta", {})), status))
+
+    def update_quarantine(self, qid: str, *, status: str | None = None, sha256: str | None = None,
+                          size: int | None = None, meta: dict | None = None, stored_name: str | None = None):
+        """Atualiza campos do registro de quarentena (colunas conhecidas apenas)."""
+        fields, params = [], []
+        for column, value in (("status", status), ("sha256", sha256), ("size", size),
+                              ("stored_name", stored_name)):
+            if value is not None:
+                fields.append(f"{column}=?")
+                params.append(value)
+        if meta is not None:
+            fields.append("meta_json=?")
+            params.append(json.dumps(meta, ensure_ascii=False))
+        if not fields:
+            return
+        params.append(qid)
+        self._exec(f"UPDATE quarantine SET {', '.join(fields)} WHERE id=?", tuple(params))
 
     def get_quarantine(self, qid: str):
         rows = self._query("SELECT * FROM quarantine WHERE id=?", (qid,))

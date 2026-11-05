@@ -22,6 +22,7 @@ except ImportError:
 log = get_logger(__name__)
 COMMON_PORTS = {20, 21, 22, 25, 53, 80, 110, 123, 143, 443, 465, 587, 853, 993, 995, 3478, 5222, 5228, 8080, 8443}
 MINING_PORTS = {3333, 4444, 5555, 7777, 14433, 14444, 45560, 45700}
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
 DEFAULT_POOL_HOSTS = [
     "pool.supportxmr.com", "pool.minexmr.com", "xmr.nanopool.org", "xmr-eu1.nanopool.org", "xmr-us-east1.nanopool.org",
     "gulf.moneroocean.stream", "pool.hashvault.pro", "mine.c3pool.com", "xmrpool.eu", "monerohash.com",
@@ -49,18 +50,31 @@ class Connection:
 
 
 def is_external(ip: str) -> bool:
+    """True apenas para endereços roteáveis na Internet pública.
+
+    Faixas privadas, loopback, link-local, multicast, reservadas, CGNAT
+    (100.64.0.0/10) e documentação não geram tráfego externo real.
+    """
     try:
         a = ipaddress.ip_address(ip.split("%")[0])
     except ValueError:
         return False
     if getattr(a, "ipv4_mapped", None):
         a = a.ipv4_mapped
-    return not (a.is_private or a.is_loopback or a.is_link_local or a.is_multicast or a.is_unspecified or a.is_reserved)
+    if isinstance(a, ipaddress.IPv4Address) and a in _CGNAT:
+        return False
+    # `is_global` sozinho considera multicast (224.0.0.0/4) global; essas faixas
+    # nunca representam um destino roteável de Internet.
+    if (a.is_multicast or a.is_reserved or a.is_link_local or a.is_loopback
+            or a.is_private or a.is_unspecified):
+        return False
+    return bool(a.is_global)
 
 
 class MiningPools:
     def __init__(self, hosts: list[str] | None = None):
-        self.hosts = list(hosts or DEFAULT_POOL_HOSTS)
+        # `[]` explícito significa "nenhum pool"; só `None` usa a lista padrão.
+        self.hosts = list(DEFAULT_POOL_HOSTS if hosts is None else hosts)
         extra = config.SIGNATURES_DIR / "mining_pools.txt"
         if extra.exists():
             self.hosts += [h.strip() for h in extra.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -78,7 +92,11 @@ class MiningPools:
         ex = ThreadPoolExecutor(max_workers=8)
         done, _ = wait([ex.submit(one, h) for h in self.hosts], timeout=timeout)
         for fut in done:
-            host, ips = fut.result()
+            try:
+                host, ips = fut.result()
+            except (OSError, ValueError) as exc:  # DNS/execução do worker
+                log.debug("Falha ao resolver pool: %s", exc)
+                continue
             for ip in ips:
                 self.ip_to_host[ip] = host
         ex.shutdown(wait=False, cancel_futures=True)
@@ -97,6 +115,9 @@ class NetworkAnalyzer:
             raw = psutil.net_connections(kind="inet")
         except psutil.AccessDenied:
             log.warning("Sem permissão para listar conexões (execute como administrador).")
+            return []
+        except psutil.Error as exc:
+            log.warning("Falha ao listar conexões: %s", exc)
             return []
         names: dict[int, tuple[str, str]] = {}
         out, now = [], time.time()

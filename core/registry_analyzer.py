@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import time
+import uuid
 from pathlib import Path
 
 from . import config
@@ -153,7 +154,7 @@ def backup_key(hive: str, path: str, directory=None) -> Path:
     d = Path(directory or config.DATA_DIR / "backups" / "registry")
     d.mkdir(parents=True, exist_ok=True)
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{hive}_{path}")[-120:]
-    out = d / f"{time.strftime('%Y%m%d_%H%M%S')}_{safe}.reg"
+    out = d / f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}_{safe}.reg"
     proc = subprocess.run(["reg.exe", "export", f"{_ROOT_NAMES[hive]}\\{path}", str(out), "/y"],
                           capture_output=True, text=True, errors="replace", timeout=60,
                           creationflags=CREATE_NO_WINDOW)

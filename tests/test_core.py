@@ -1,4 +1,4 @@
-import os, sys, tempfile, unittest
+import os, shutil, sys, tempfile, unittest
 from pathlib import Path
 
 _TMP = tempfile.mkdtemp(prefix="sentinel_test_")
@@ -12,10 +12,24 @@ from core.quarantine import Quarantine, QuarantineError
 from database.database import Database
 
 
+def make_test_root(prefix: str) -> Path:
+    """Raiz de teste fora de %TEMP% para não acionar heurísticas de "arquivo em temp"."""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+        return Path(tempfile.mkdtemp(prefix=prefix, dir=base))
+    return Path(tempfile.mkdtemp(prefix=prefix))
+
+
 class CoreTests(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp(prefix="sx_"))
+        self.root = make_test_root("sx_")
         self.db = Database(self.root / "t.db")
+
+    def tearDown(self):
+        try:
+            self.db.close()
+        finally:
+            shutil.rmtree(self.root, ignore_errors=True)
 
     def test_unsigned_alone_is_not_flagged(self):
         f = self.root / "tool.exe"
@@ -34,7 +48,9 @@ class CoreTests(unittest.TestCase):
 
     def test_mimic_name_and_known_hash(self):
         d = self.root / "Temp"; d.mkdir()
-        f = d / "svchost.exe"; f.write_bytes(b"MZ" + b"abc" * 100)
+        # Payload neutro: "MZ" + bytes repetidos "abc" faz o Windows Defender
+        # bloquear a leitura do arquivo (EINVAL) durante a varredura em tempo real.
+        f = d / "svchost.exe"; f.write_bytes(b"MZ" + b"\x00" * 1000)
         r = FileAnalyzer(self.db, set()).analyze(f)
         self.assertGreaterEqual(r.risk, RiskLevel.ALTO)
         r2 = FileAnalyzer(self.db, {sha256_file(f)}).analyze(f)

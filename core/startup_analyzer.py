@@ -195,10 +195,11 @@ class StartupAnalyzer:
         lnks = [str(f) for f, _ in files if f.suffix.lower() == ".lnk"]
         if lnks and IS_WINDOWS:
             try:
-                proc = run_powershell(_PS_SHORTCUTS, json.dumps(lnks, ensure_ascii=True), timeout=60)
-                for r in _list(json.loads(proc.stdout.strip() or "[]")):
-                    targets[r["Path"]] = (r["Target"], r["Args"])
-            except (PowerShellError, json.JSONDecodeError, OSError, KeyError) as exc:
+                rows = run_powershell_json(_PS_SHORTCUTS, json.dumps(lnks, ensure_ascii=True), timeout=60)
+                for r in _list(rows):
+                    if isinstance(r, dict) and "Path" in r:
+                        targets[r["Path"]] = (r.get("Target", ""), r.get("Args", ""))
+            except (PowerShellError, OSError, KeyError) as exc:
                 log.warning("Não foi possível resolver atalhos: %s", exc)
         out = []
         for f, hive in files:
@@ -216,12 +217,18 @@ class StartupAnalyzer:
         if psutil is None or not hasattr(psutil, "win_service_iter"):
             return []
         out = []
-        for svc in psutil.win_service_iter():
+        try:
+            services = list(psutil.win_service_iter())
+        except psutil.Error as exc:
+            log.warning("Não foi possível listar serviços: %s", exc)
+            return []
+        for svc in services:
             try:
                 d = svc.as_dict()
-            except Exception:
+            except (psutil.Error, OSError) as exc:
+                log.debug("Serviço inacessível ignorado: %s", exc)
                 continue
-            if d.get("start_type") == "disabled":
+            if d.get("start_type") == "disabled" or not d.get("name"):
                 continue
             e = StartupEntry("service", d["name"], "Serviços do Windows", d.get("binpath") or "",
                              extra={"display": d.get("display_name"), "start_type": d.get("start_type"),
@@ -238,12 +245,15 @@ class StartupAnalyzer:
             return []
         out = []
         for t in _list(run_powershell_json(_PS_TASKS, timeout=120)):
-            cmd = f'"{t["Execute"]}" {t["Arguments"]}'.strip() if " " in t["Execute"] and not t["Execute"].startswith('"') \
-                else f'{t["Execute"]} {t["Arguments"]}'.strip()
-            out.append(StartupEntry("task", t["Name"], "Agendador de Tarefas " + t["Path"], cmd,
-                                    enabled=t["State"].lower() != "disabled",
-                                    extra={"task_name": t["Name"], "task_path": t["Path"], "state": t["State"],
-                                           "triggers": t["Triggers"]}))
+            if not isinstance(t, dict) or not t.get("Execute"):
+                continue
+            execute = str(t["Execute"])
+            cmd = f'"{execute}" {t.get("Arguments", "")}'.strip() if " " in execute and not execute.startswith('"') \
+                else f'{execute} {t.get("Arguments", "")}'.strip()
+            out.append(StartupEntry("task", str(t.get("Name", "")), "Agendador de Tarefas " + str(t.get("Path", "")),
+                                    cmd, enabled=str(t.get("State", "")).lower() != "disabled",
+                                    extra={"task_name": str(t.get("Name", "")), "task_path": str(t.get("Path", "")),
+                                           "state": t.get("State"), "triggers": t.get("Triggers")}))
         return out
 
     def collect_drivers(self) -> list[StartupEntry]:
@@ -251,9 +261,9 @@ class StartupAnalyzer:
             return []
         out = []
         for d in _list(run_powershell_json(_PS_DRIVERS, timeout=90)):
-            if not d.get("PathName"):
+            if not isinstance(d, dict) or not d.get("PathName"):
                 continue
-            out.append(StartupEntry("driver", d["Name"], "Drivers do sistema", d["PathName"],
+            out.append(StartupEntry("driver", str(d.get("Name", "")), "Drivers do sistema", str(d["PathName"]),
                                     enabled=str(d.get("StartMode")).lower() != "disabled",
                                     extra={"display": d.get("DisplayName"), "start_mode": d.get("StartMode"),
                                            "state": d.get("State")}))
@@ -340,7 +350,10 @@ class StartupManager:
         if e.kind == "driver":
             return True
         if e.kind in ("service", "task"):
-            if e.exe and under_windir(e.exe):
+            # Usa o alvo já avaliado ou reextrai do comando: uma entrada criada
+            # manualmente (sem passar por evaluate) não pode burlar a proteção.
+            exe = e.exe or split_command(normalize_nt(expand_env(e.command)))[0]
+            if exe and under_windir(exe):
                 return True
             if e.kind == "task" and e.extra.get("task_path", "").lower().startswith("\\microsoft\\windows\\"):
                 return True

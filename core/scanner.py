@@ -155,6 +155,15 @@ class Scanner:
                     t.join(timeout=0.2)
                 emit("analisando")
             findings = self._finish_findings(scan_id, emit)
+        except BaseException:
+            # Nunca deixa workers bloqueados no queue se a varredura falhar.
+            for _ in threads:
+                try:
+                    q.put(None, timeout=0.2)
+                except queue.Full:
+                    pass
+            self.db.finish_scan(scan_id, self.seen, 0, "failed")
+            raise
         finally:
             restore_prio()
         cancelled = self._cancel.is_set()

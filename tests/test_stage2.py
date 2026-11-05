@@ -18,15 +18,47 @@ from core.scanner import Scanner
 from core.startup_analyzer import (StartupAnalyzer, StartupEntry, StartupError, StartupManager, split_command)
 from database.database import Database
 
-REAL_PE = next((p for p in ("/opt/pipx/shared/lib/python3.12/site-packages/pip/_vendor/distlib/t64.exe",) if os.path.exists(p)), None)
+REAL_PE = next((p for p in (
+    "/opt/pipx/shared/lib/python3.12/site-packages/pip/_vendor/distlib/t64.exe",
+    sys.executable,
+) if p and os.path.exists(p)), None)
+
+
+def make_test_root(prefix: str) -> Path:
+    """Raiz de teste fora de %TEMP% para não acionar heurísticas de "arquivo em temp"."""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+        return Path(tempfile.mkdtemp(prefix=prefix, dir=base))
+    return Path(tempfile.mkdtemp(prefix=prefix))
+
+
+def make_dir_link(target: Path, link: Path) -> bool:
+    """Cria symlink ou junction. Retorna False se o ambiente não permitir."""
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError):
+        pass
+    if sys.platform == "win32":
+        import subprocess
+        proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                              capture_output=True, text=True)
+        return proc.returncode == 0 and link.exists()
+    return False
 
 
 class Base(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp(prefix="s2_"))
+        self.root = make_test_root("s2_")
         self.db = Database(self.root / "t.db")
         self.tempdir = self.root / "AppData" / "Local" / "Temp"
         self.tempdir.mkdir(parents=True)
+
+    def tearDown(self):
+        try:
+            self.db.close()
+        finally:
+            shutil.rmtree(self.root, ignore_errors=True)
 
 
 class ScannerTests(Base):
@@ -69,11 +101,12 @@ class ScannerTests(Base):
         self.assertLess(r.files_analyzed, 300)
         self.assertEqual(self.db.list_scans(1)[0]["status"], "cancelled")
 
-    def test_does_not_follow_symlinks(self):
+    def test_does_not_follow_symlinks_or_junctions(self):
         outside = self.root / "outside"; outside.mkdir()
         (outside / "evil.pdf.exe").write_bytes(b"MZ" + b"\0" * 100)
         scan_dir = self.root / "scan"; scan_dir.mkdir()
-        (scan_dir / "link").symlink_to(outside)
+        if not make_dir_link(outside, scan_dir / "link"):
+            self.skipTest("ambiente não permite criar symlink/junction")
         r = Scanner(self.db, FileAnalyzer(self.db, set())).run("custom", [scan_dir])
         self.assertEqual(r.files_seen, 0)
 
@@ -120,7 +153,7 @@ class ProcessTests(Base):
         pa = ProcessAnalyzer(FileAnalyzer(self.db, set()), self.db)
         infos = pa.snapshot(cpu_interval=0.1, deep=False, signatures="none")
         self.assertTrue(any(i.pid == os.getpid() for i in infos))
-        child = subprocess.Popen(["sleep", "30"])
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
         try:
             ct = next(i.create_time for i in pa.snapshot(0.0, deep=False, signatures="none") if i.pid == child.pid)
             with self.assertRaises(PermissionError):
@@ -223,6 +256,13 @@ class StartupTests(Base):
         self.assertIn("Updater", reg.values(HKCU, base + r"\Run"))   # valor original preservado
         mgr.enable(entries[0], confirmed=True)
         self.assertTrue(sa.collect_registry()[0].enabled)
+
+    def test_unevaluated_windows_service_is_still_refused(self):
+        # Sem passar por evaluate(), exe fica vazio; o comando ainda deve ser analisado.
+        svc = StartupEntry("service", "Spooler", "Serviços", r"C:\Windows\System32\spoolsv.exe")
+        self.assertTrue(StartupManager.is_critical(svc))
+        with self.assertRaises(StartupError):
+            StartupManager(FakeRegistry(), self.db).disable(svc, confirmed=True)
 
     def test_critical_and_drivers_refused(self):
         mgr = StartupManager(FakeRegistry(), self.db)

@@ -11,13 +11,12 @@ import json
 import math
 import os
 import re
-import time
 from pathlib import Path
 
 from . import config
 from .logger import get_logger
 from .models import Finding
-from .platform_utils import IS_WINDOWS, PowerShellError, run_powershell
+from .platform_utils import IS_WINDOWS, PowerShellError, run_powershell_json
 from .safety import norm
 
 log = get_logger(__name__)
@@ -134,10 +133,11 @@ class FileAnalyzer:
         if not IS_WINDOWS or not paths:
             return {p: {"status": "Unavailable", "subject": ""} for p in paths}
         try:
-            proc = run_powershell(_PS_SIGNATURE, json.dumps(paths, ensure_ascii=True), timeout=120)
-            data = json.loads(proc.stdout.strip() or "[]")
-            return {d["Path"]: {"status": d["Status"], "subject": d["Subject"]} for d in data}
-        except (PowerShellError, json.JSONDecodeError, OSError, KeyError) as exc:
+            data = run_powershell_json(_PS_SIGNATURE, json.dumps(paths, ensure_ascii=True), timeout=120)
+            rows = [] if data is None else (data if isinstance(data, list) else [data])
+            return {d["Path"]: {"status": d["Status"], "subject": d["Subject"]} for d in rows
+                    if isinstance(d, dict) and "Path" in d}
+        except (PowerShellError, OSError, KeyError, TypeError) as exc:
             log.warning("Falha ao verificar assinaturas: %s", exc)
             return {p: {"status": "Unavailable", "subject": ""} for p in paths}
 
@@ -152,9 +152,13 @@ class FileAnalyzer:
         elif status == "HashMismatch":
             f.add("sig_tampered", "Arquivo alterado após ser assinado (hash não confere)", 40, "Arquivo adulterado")
         elif status == "NotSigned":
-            f.add("sig_none", "Sem assinatura digital (indicador fraco isolado)", 3)
-        elif status in ("NotTrusted", "UnknownError", "NotSupportedFileFormat"):
+            # Ausência de assinatura não é evidência positiva (peso 0): fica registrada
+            # para transparência, mas não pode, sozinha, classificar um arquivo.
+            f.add("sig_none", "Sem assinatura digital (indicador fraco isolado)", 0)
+        elif status == "NotTrusted":
             f.add("sig_untrusted", f"Assinatura não confiável ({status})", 5)
+        # UnknownError/NotSupportedFileFormat/Unavailable são resultados INCONCLUSIVOS
+        # (arquivo não-PE, falha do PowerShell, etc.) e não viram evidência.
 
     # --- heurística principal ---------------------------------------------------
     def analyze(self, path, check_signature: bool = True) -> Finding | None:
@@ -188,8 +192,8 @@ class FileAnalyzer:
         attrs = getattr(st, "st_file_attributes", 0)
         if (is_pe or is_script) and attrs & 0x2 and "\\appdata\\" in s + "\\":
             f.add("hidden_exec", "Executável oculto em diretório de dados do usuário", 10)
-        if (is_pe or is_script) and time.time() - st.st_ctime < config.RECENT_FILE_DAYS * 86400 and in_temp_dir(p):
-            f.add("recent_temp", "Criado recentemente em diretório temporário", 5)
+        # "Criado recentemente em temp" seria redundante com in_temp e apenas somava
+        # dois indicadores correlacionados (falso positivo). Mantido apenas in_temp.
 
         if is_pe or is_script:
             try:
