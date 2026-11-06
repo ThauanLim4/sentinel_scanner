@@ -186,14 +186,24 @@ class ProcessAnalyzer:
                     raise PermissionError(f"'{name}' hospeda o serviço '{svc.name()}'. Desative o serviço em vez de "
                                           "encerrar o processo.")
             children = _safe(lambda: p.children(recursive=True), [])
-            victims = (children if kill_tree else []) + [p]
+            victims = [p]
+            skipped = 0
+            if kill_tree:
+                # Nunca encerra um filho crítico (ex.: um serviço do Windows iniciado
+                # pelo processo) nem um filho cujo nome não pôde ser lido.
+                for c in children:
+                    cname, cexe = _safe(c.name), _safe(c.exe) or ""
+                    if not cname or is_critical_process(cname, cexe, c.pid):
+                        skipped += 1
+                        continue
+                    victims.append(c)
             for v in victims:
                 _safe(v.terminate)
             gone, alive = psutil.wait_procs(victims, timeout=timeout)
             for v in alive:
                 _safe(v.kill)
             info = {"pid": pid, "name": name, "exe": exe, "children_found": len(children),
-                    "terminated": len(victims)}
+                    "children_skipped": skipped, "terminated": len(victims)}
         except psutil.NoSuchProcess as exc:
             raise ProcessLookupError("O processo não existe mais.") from exc
         except psutil.AccessDenied as exc:

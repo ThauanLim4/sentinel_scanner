@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import stat
 import sys
 import tempfile
@@ -19,7 +20,8 @@ os.environ.setdefault("SENTINEL_HOME", tempfile.mkdtemp(prefix="sentinel_qtest_h
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core import quarantine_crypto as qc
-from core.quarantine import Quarantine, QuarantineError
+from core import win_security
+from core.quarantine import (Quarantine, QuarantineError, RESTORE_BACKUP_PREFIX, RESTORE_TMP_PREFIX)
 from core.quarantine_crypto import (CryptoError, IntegrityError, decrypt_stream, encrypt_stream,
                                     legacy_xor, unwrap_key, verify_stream, wrap_key)
 from database.database import Database
@@ -315,6 +317,210 @@ class QuarantineSecurityTests(unittest.TestCase):
 
         q.restore(qid)
         self.assertEqual(src.read_bytes(), plain)
+
+    # ------------------------------------------------------------------ interrupções
+    def test_encryption_failure_during_quarantine_keeps_original(self):
+        f = self.make_file(payload=b"conteudo original")
+
+        def boom(src, dst, key, item_id):
+            Path(dst).write_bytes(b"parcial")  # simula queda no meio da cópia
+            raise CryptoError("interrompido durante a criptografia")
+
+        with mock.patch("core.quarantine.encrypt_stream", side_effect=boom):
+            with self.assertRaises(QuarantineError):
+                self.q.quarantine_file(f, allowed_roots=[self.root])
+        self.assertEqual(f.read_bytes(), b"conteudo original")
+        self.assertEqual(list(self.qdir.glob("*")), [])
+        self.assertEqual(self.db.list_quarantine(status=None)[0]["status"], "failed")
+
+    def test_verification_failure_during_quarantine_keeps_original(self):
+        f = self.make_file(payload=b"conteudo original")
+        with mock.patch("core.quarantine.verify_stream", side_effect=CryptoError("tag inválida")):
+            with self.assertRaises(QuarantineError):
+                self.q.quarantine_file(f, allowed_roots=[self.root])
+        self.assertEqual(f.read_bytes(), b"conteudo original")
+        self.assertEqual(list(self.qdir.glob("*")), [])
+        self.assertEqual(self.db.list_quarantine(status=None)[0]["status"], "failed")
+
+    def test_promotion_failure_during_quarantine_keeps_original(self):
+        f = self.make_file(payload=b"conteudo original")
+        real_replace = os.replace
+
+        def fail_promotion(src, dst):
+            if Path(src).name.endswith(".qz.part"):
+                raise OSError("falha simulada na promoção")
+            return real_replace(src, dst)
+
+        with mock.patch("core.quarantine.os.replace", side_effect=fail_promotion):
+            with self.assertRaises(QuarantineError):
+                self.q.quarantine_file(f, allowed_roots=[self.root])
+        self.assertEqual(f.read_bytes(), b"conteudo original")
+        self.assertEqual(list(self.qdir.glob("*")), [])
+        self.assertEqual(self.db.list_quarantine(status=None)[0]["status"], "failed")
+
+    def test_recovery_promotes_pending_copy_after_original_removed(self):
+        src = self.root / "interrompido.bin"
+        payload = os.urandom(30_000)
+        src.write_bytes(payload)
+        qid = uuid.uuid4().hex
+        key = os.urandom(32)
+        stored = self.qdir / f"{qid}.qz"
+        digest, size = encrypt_stream(src, stored, key, qid)
+        self.db.add_quarantine({
+            "id": qid, "original_path": str(src), "stored_name": stored.name, "sha256": digest,
+            "size": size, "evidence": [], "meta": {"version": 2, "sha256": digest, "size": size,
+                                                    "wrapped_key": wrap_key(key, qid)}},
+            status="pending")
+        os.remove(src)
+
+        q = Quarantine(self.db, self.qdir)
+        self.assertEqual(self.db.get_quarantine(qid)["status"], "quarantined")
+        q.restore(qid)
+        self.assertEqual(src.read_bytes(), payload)
+
+    def test_missing_quarantined_copy_is_reported_not_silently_deleted(self):
+        f = self.make_file()
+        qid = self.q.quarantine_file(f, allowed_roots=[self.root])
+        (self.qdir / f"{qid}.qz").unlink()
+        Quarantine(self.db, self.qdir)
+        self.assertEqual(self.db.get_quarantine(qid)["status"], "failed")
+        actions = [a for a in self.db.list_actions() if a["action"] == "quarantine_recover"
+                   and f"id={qid}" in (a["detail"] or "")]
+        self.assertTrue(actions and actions[0]["success"] == 0)
+
+    def test_delete_interruption_with_copy_present_is_reverted(self):
+        f = self.make_file()
+        qid = self.q.quarantine_file(f, allowed_roots=[self.root])
+        self.db.update_quarantine(qid, status="deleting")
+        Quarantine(self.db, self.qdir)
+        self.assertEqual(self.db.get_quarantine(qid)["status"], "quarantined")
+        self.assertTrue((self.qdir / f"{qid}.qz").exists())
+
+    def test_delete_interruption_after_unlink_is_completed(self):
+        f = self.make_file()
+        qid = self.q.quarantine_file(f, allowed_roots=[self.root])
+        (self.qdir / f"{qid}.qz").unlink()
+        self.db.update_quarantine(qid, status="deleting")
+        Quarantine(self.db, self.qdir)
+        rec = self.db.get_quarantine(qid)
+        self.assertEqual(rec["status"], "deleted")
+        self.assertNotIn("wrapped_key", meta_of(rec))
+
+    # ------------------------------------------------------------------ restauração
+    def test_restore_db_failure_after_promotion_is_recovered(self):
+        payload = os.urandom(4096)
+        f = self.make_file(payload=payload)
+        qid = self.q.quarantine_file(f, allowed_roots=[self.root])
+        stored = self.qdir / f"{qid}.qz"
+        original_update = self.db.update_quarantine
+
+        def flaky(q, **kw):
+            if kw.get("status") == "restored":
+                raise sqlite3.Error("falha simulada no banco")
+            return original_update(q, **kw)
+
+        with mock.patch.object(self.db, "update_quarantine", side_effect=flaky):
+            with self.assertRaises(QuarantineError):
+                self.q.restore(qid)
+        # O arquivo já foi promovido, mas a cópia cifrada e o journal são preservados.
+        self.assertEqual(f.read_bytes(), payload)
+        self.assertTrue(stored.exists())
+        self.assertEqual(self.db.get_quarantine(qid)["status"], "restoring")
+
+        Quarantine(self.db, self.qdir)  # recuperação conclui o registro
+        self.assertEqual(self.db.get_quarantine(qid)["status"], "restored")
+        self.assertFalse(stored.exists())
+        self.assertEqual(f.read_bytes(), payload)
+        self.assertEqual(list(self.root.glob(f"{RESTORE_TMP_PREFIX}*")), [])
+        self.assertEqual(list(self.root.glob(f"{RESTORE_BACKUP_PREFIX}*")), [])
+
+    def test_restore_failure_preserves_existing_destination(self):
+        payload = os.urandom(2048)
+        f = self.make_file(payload=payload)
+        qid = self.q.quarantine_file(f, allowed_roots=[self.root])
+        old = b"arquivo anterior que nao pode ser perdido"
+        f.write_bytes(old)
+        stored = self.qdir / f"{qid}.qz"
+        real_replace = os.replace
+
+        def fail_promotion(src, dst):
+            name = Path(src).name
+            if name.startswith(RESTORE_TMP_PREFIX) and not name.startswith(RESTORE_BACKUP_PREFIX):
+                raise OSError(28, "espaco em disco esgotado")
+            return real_replace(src, dst)
+
+        with mock.patch("core.quarantine.os.replace", side_effect=fail_promotion):
+            with self.assertRaises(QuarantineError):
+                self.q.restore(qid, overwrite=True)
+
+        self.assertEqual(f.read_bytes(), old)       # destino anterior preservado
+        self.assertTrue(stored.exists())            # cópia cifrada preservada
+        self.assertEqual(self.db.get_quarantine(qid)["status"], "quarantined")
+        self.assertEqual(list(self.root.glob(f"{RESTORE_TMP_PREFIX}*")), [])
+        self.assertEqual(list(self.root.glob(f"{RESTORE_BACKUP_PREFIX}*")), [])
+
+    def test_restore_failure_during_decryption_removes_plaintext_temp(self):
+        f = self.make_file(payload=os.urandom(2048))
+        qid = self.q.quarantine_file(f, allowed_roots=[self.root])
+        stored = self.qdir / f"{qid}.qz"
+        with mock.patch("core.quarantine.decrypt_stream", side_effect=OSError(28, "sem espaco")):
+            with self.assertRaises(QuarantineError):
+                self.q.restore(qid)
+        self.assertFalse(f.exists())
+        self.assertTrue(stored.exists())
+        self.assertEqual(self.db.get_quarantine(qid)["status"], "quarantined")
+        self.assertEqual(list(self.root.glob(f"{RESTORE_TMP_PREFIX}*")), [])
+
+    def test_interrupted_restore_cleans_temp_and_restores_backup(self):
+        payload = os.urandom(2048)
+        f = self.make_file(payload=payload)
+        qid = self.q.quarantine_file(f, allowed_roots=[self.root])
+        f.write_bytes(b"conteudo anterior")  # destino que seria preservado no overwrite
+        rec = self.db.get_quarantine(qid)
+        meta = meta_of(rec)
+        tmp = f.with_name(f"{RESTORE_TMP_PREFIX}{qid}-deadbeef.tmp")
+        backup = f.with_name(f"{RESTORE_BACKUP_PREFIX}{qid}-deadbeef.tmp")
+        tmp.write_bytes(b"texto claro temporario")
+        backup.write_bytes(b"conteudo anterior")
+        meta["restore"] = {"dest": str(f), "tmp": str(tmp), "backup": str(backup), "phase": "promoting"}
+        self.db.update_quarantine(qid, status="restoring", meta=meta)
+
+        Quarantine(self.db, self.qdir)
+        self.assertFalse(tmp.exists())               # nenhum texto claro residual
+        self.assertFalse(backup.exists())
+        self.assertEqual(f.read_bytes(), b"conteudo anterior")
+        self.assertTrue((self.qdir / f"{qid}.qz").exists())
+        self.assertEqual(self.db.get_quarantine(qid)["status"], "quarantined")
+
+    def test_invalid_wrapped_key_cannot_restore(self):
+        f = self.make_file()
+        qid = self.q.quarantine_file(f, allowed_roots=[self.root])
+        rec = self.db.get_quarantine(qid)
+        meta = meta_of(rec)
+        meta["wrapped_key"] = "dpapi:" + "A" * 40
+        self.db.update_quarantine(qid, meta=meta)
+        with self.assertRaises(QuarantineError):
+            self.q.restore(qid)
+        self.assertFalse(f.exists())
+        self.assertEqual(self.db.get_quarantine(qid)["status"], "quarantined")
+
+    def test_master_key_is_private_and_secure_failure_is_fail_closed(self):
+        data_dir = self.root / "data_keys"
+        with mock.patch.object(qc.config, "DATA_DIR", data_dir), \
+                mock.patch.object(qc, "IS_WINDOWS", False):
+            token = wrap_key(os.urandom(32), "item-private")
+            master = data_dir / "keys" / "master.key"
+            self.assertTrue(master.exists())
+            self.assertTrue(win_security.verify_private_file(master))
+
+            # Se a proteção não puder ser comprovada, o fallback deve falhar.
+            data_dir2 = self.root / "data_keys2"
+            with mock.patch.object(qc.config, "DATA_DIR", data_dir2), \
+                    mock.patch.object(qc.win_security, "verify_private_file", return_value=False), \
+                    mock.patch.object(qc.win_security, "secure_private_file", return_value=False):
+                with self.assertRaises(CryptoError):
+                    wrap_key(os.urandom(32), "item-inseguro")
+            self.assertFalse((data_dir2 / "keys" / "master.key").exists())
 
     def test_master_key_fallback_never_exposes_key(self):
         key = os.urandom(32)

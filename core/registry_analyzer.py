@@ -101,6 +101,8 @@ class RegistryAccess:
                 winreg.SetValueEx(key, name, 0, getattr(winreg, typ), data)
         except PermissionError as exc:
             raise RegistryError("Permissão negada: execute o programa como administrador.") from exc
+        except (OSError, AttributeError, ValueError) as exc:
+            raise RegistryError(f"Falha ao gravar no Registro: {exc}") from exc
 
     def delete_value(self, hive: str, path: str, name: str) -> None:
         try:
@@ -110,6 +112,8 @@ class RegistryAccess:
             pass
         except PermissionError as exc:
             raise RegistryError("Permissão negada: execute o programa como administrador.") from exc
+        except OSError as exc:
+            raise RegistryError(f"Falha ao remover valor do Registro: {exc}") from exc
 
 
 class FakeRegistry:
@@ -151,13 +155,18 @@ def backup_key(hive: str, path: str, directory=None) -> Path:
     """Exporta a chave para um .reg (restaurável com duplo clique ou 'reg import')."""
     if not IS_WINDOWS:
         raise RegistryError("Backup do Registro só está disponível no Windows.")
+    if hive not in _ROOT_NAMES:
+        raise RegistryError(f"Colmeia de Registro inválida: {hive}")
     d = Path(directory or config.DATA_DIR / "backups" / "registry")
-    d.mkdir(parents=True, exist_ok=True)
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{hive}_{path}")[-120:]
-    out = d / f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}_{safe}.reg"
-    proc = subprocess.run(["reg.exe", "export", f"{_ROOT_NAMES[hive]}\\{path}", str(out), "/y"],
-                          capture_output=True, text=True, errors="replace", timeout=60,
-                          creationflags=CREATE_NO_WINDOW)
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{hive}_{path}")[-120:]
+        out = d / f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}_{safe}.reg"
+        proc = subprocess.run(["reg.exe", "export", f"{_ROOT_NAMES[hive]}\\{path}", str(out), "/y"],
+                              capture_output=True, text=True, errors="replace", timeout=60,
+                              creationflags=CREATE_NO_WINDOW)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RegistryError(f"Falha ao executar o backup do Registro: {exc}") from exc
     if proc.returncode != 0 or not out.exists():
         raise RegistryError(f"Falha ao exportar backup de {hive}\\{path}: {(proc.stderr or proc.stdout).strip()}")
     return out

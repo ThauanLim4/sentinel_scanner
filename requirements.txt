@@ -1,8 +1,8 @@
+# Dependências obrigatórias do núcleo (Etapa 2.2).
 psutil>=5.9
-pefile>=2023.2.7
 cryptography>=42.0
-PySide6>=6.6
-# Opcional (consulta de reputação por hash no VirusTotal, desligada por padrão)
-requests>=2.31
-# Para gerar o .exe (etapa final)
-pyinstaller>=6.0
+
+# Opcional, mas necessária para a análise estática completa de PE.
+# Sem pefile o Sentinel continua importável; a análise de PE fica limitada
+# (sem seções/imports/entropy) e `read_company_name` retorna None.
+pefile>=2023.2.7

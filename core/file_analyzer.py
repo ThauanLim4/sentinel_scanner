@@ -221,11 +221,9 @@ class FileAnalyzer:
                 data = fh.read(config.MAX_SCRIPT_SCAN_BYTES)
         except OSError:
             return
-        hits = 0
         for rx, desc, w in SCRIPT_PATTERNS:
             if rx.search(data):
                 f.add("script_" + desc[:12], desc, w, "Script suspeito")
-                hits += 1
         if MINER_STRONG.search(data):
             f.add("miner_script", "Script com indicadores de mineração (stratum/pool)", 40, "Minerador")
 

@@ -33,6 +33,9 @@ _PS_GPU = ("[Console]::OutputEncoding=[Text.Encoding]::UTF8;$c=(Get-Counter '\\G
 class MinerDetector:
     def __init__(self, pools: MiningPools | None = None, cpu_threshold: float = 40.0, gpu_threshold: float = 50.0,
                  use_gpu: bool = True):
+        # Limiares em porcentagem do TOTAL do sistema (0-100), já normalizados pelo
+        # número de processadores lógicos. 40% do total costuma indicar vários núcleos
+        # ocupados; um único núcleo a 100% em uma máquina de 8 CPUs aparece como 12,5%.
         self.pools = pools or MiningPools()
         self.cpu_threshold, self.gpu_threshold = cpu_threshold, gpu_threshold
         self.use_gpu = use_gpu and IS_WINDOWS
@@ -91,10 +94,15 @@ class MinerDetector:
                 try:
                     t = p.cpu_times()
                     total = float(t.user) + float(t.system)
-                    previous = last_cpu.get(pid)
+                    create_time = p.create_time()
+                    key = keys.setdefault(pid, (pid, create_time))
+                    # PID reutilizado por outro processo durante a amostragem: não
+                    # mistura o histórico de CPU de dois processos diferentes.
+                    previous = last_cpu.get(pid) if key[1] == create_time else None
+                    if key[1] != create_time:
+                        key = keys[pid] = (pid, create_time)
                     last_cpu[pid] = total
                     pct = 0.0 if previous is None else (total - previous) / elapsed / n * 100.0
-                    key = keys.setdefault(pid, (pid, p.create_time()))
                     cpu.setdefault(key, []).append(max(0.0, pct))
                     gpu.setdefault(key, []).append(g.get(pid, 0.0))
                 except psutil.Error:
@@ -164,9 +172,11 @@ class MinerDetector:
             # compatível com qualquer aplicativo legítimo que inicia com o Windows.
             st = self.stats.get((info.pid, info.create_time))
             if st and fam & {"cmdline", "network", "file", "disguise"}:
-                if st["cpu_frac"] >= 0.8 and st["samples"] >= 3:
+                if (st["cpu_frac"] >= 0.8 and st["cpu_avg"] >= self.cpu_threshold
+                        and st["samples"] >= 3):
                     f.add("miner_cpu", f"CPU sustentada ({st['cpu_avg']:.0f}% do total) durante a amostragem", 10); fam.add("resource")
-                if st["gpu_frac"] >= 0.8 and st["samples"] >= 3:
+                if (st["gpu_frac"] >= 0.8 and st["gpu_avg"] >= self.gpu_threshold
+                        and st["samples"] >= 3):
                     f.add("miner_gpu", f"GPU sustentada ({st['gpu_avg']:.0f}%) durante a amostragem", 8); fam.add("resource")
             if not fam or fam <= {"resource", "persistence"}:
                 continue  # CPU/GPU/persistência sem outro indicador não é evidência

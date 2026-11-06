@@ -1,0 +1,4 @@
+# Dependências de desenvolvimento/teste.
+# A suíte usa apenas a biblioteca padrão (unittest). Nenhum pacote é obrigatório
+# para rodar os testes; este arquivo existe para manter o ambiente reprodutível.
+-r requirements.txt

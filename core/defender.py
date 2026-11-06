@@ -77,13 +77,31 @@ class DefenderClient:
                     out["message"] = "Proteção em tempo real DESATIVADA."
                 elif data.get("SignatureAgeDays", 0) > 3:
                     out["message"] = "Definições de vírus desatualizadas."
+                elif not out["available"]:
+                    out["message"] = "Serviço do Microsoft Defender não está ativo."
+            else:
+                # Saída vazia NÃO significa "sistema limpo": é ausência de resposta.
+                out["message"] = ("O PowerShell não retornou o estado do Defender; "
+                                  "isso não comprova que o sistema está protegido ou limpo.")
         except PowerShellError as exc:
             out["message"] = f"Defender indisponível: {exc}"
         return out
 
     def update_signatures(self) -> bool:
-        run_powershell_json("Update-MpSignature; '{\"ok\":true}'", timeout=600)
-        return True
+        """Atualiza as definições. Retorna True SOMENTE se o cmdlet confirmou sucesso."""
+        script = ("try{Update-MpSignature -ErrorAction Stop;"
+                  "[pscustomobject]@{ok=$true;error=''}}"
+                  "catch{[pscustomobject]@{ok=$false;error=[string]$_}} | ConvertTo-Json -Compress")
+        try:
+            data = run_powershell_json(script, timeout=600)
+        except PowerShellError as exc:
+            log.warning("Falha ao atualizar as definições do Defender: %s", exc)
+            return False
+        ok = bool(isinstance(data, dict) and data.get("ok"))
+        if not ok:
+            log.warning("Atualização de definições não confirmada: %s",
+                        data.get("error", "") if isinstance(data, dict) else data)
+        return ok
 
     def threats(self) -> list[dict]:
         return _as_list(run_powershell_json(_PS_THREATS))
@@ -95,8 +113,14 @@ class DefenderClient:
         exe = mpcmdrun_path()
         if not exe:
             raise DefenderUnavailable("MpCmdRun.exe não encontrado.")
-        proc = subprocess.run([str(exe), "-Restore", "-ListAll"], capture_output=True, text=True,
-                              errors="replace", timeout=60, creationflags=CREATE_NO_WINDOW)
+        try:
+            proc = subprocess.run([str(exe), "-Restore", "-ListAll"], capture_output=True, text=True,
+                                  errors="replace", timeout=60, creationflags=CREATE_NO_WINDOW)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise DefenderUnavailable(f"Falha ao executar MpCmdRun: {exc}") from exc
+        if proc.returncode != 0:
+            raise DefenderUnavailable(
+                f"MpCmdRun retornou código {proc.returncode}: {(proc.stderr or proc.stdout).strip()}")
         return proc.stdout.strip()
 
     def start_scan(self, kind: str = "quick", path: str | None = None) -> "DefenderScan":

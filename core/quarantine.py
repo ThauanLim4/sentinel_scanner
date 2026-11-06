@@ -32,13 +32,15 @@ from .quarantine_crypto import (CHUNK as CRYPTO_CHUNK, CryptoError, IntegrityErr
                                 encrypt_stream, legacy_xor, unwrap_key, verify_stream, wrap_key)
 from .safety import (UnsafePathError, is_dangerous_target, is_protected, is_reparse_point, is_within,
                      validate_target)
-from .win_security import apply_attributes, apply_mode, capture_acl, restore_acl
+from .win_security import apply_attributes, apply_mode, capture_acl, restore_acl, secure_private_file
 
 log = get_logger(__name__)
 
 LEGACY_CHUNK = 64 * 1024  # tamanho usado pela implementação antiga (múltiplo de 32)
 KEY_LEN = 32
 RECOVERABLE = ("pending", "ready")
+RESTORE_TMP_PREFIX = ".sentinel-restore-"
+RESTORE_BACKUP_PREFIX = ".sentinel-restore-backup-"
 
 
 class QuarantineError(Exception):
@@ -86,6 +88,50 @@ def _reparse_in_existing_ancestors(path) -> bool:
         if cur.parent == cur:
             return False
         cur = cur.parent
+
+
+def _strip_restore(meta: dict) -> dict:
+    """Remove o journal transitório de restauração dos metadados persistidos."""
+    return {k: v for k, v in meta.items() if k != "restore"}
+
+
+def _valid_restore_artifact(path, dest: Path, prefix: str) -> bool:
+    """Valida nomes/limites de temporários para não apagar arquivos arbitrários.
+
+    O nome é gerado exclusivamente por nós e o arquivo precisa estar no mesmo
+    diretório do destino, ser regular e não ser link/junction.
+    """
+    p = Path(path)
+    try:
+        return (p.name.startswith(prefix) and p.suffix == ".tmp"
+                and os.path.normcase(str(p.parent)) == os.path.normcase(str(Path(dest).parent))
+                and p.is_file() and not is_reparse_point(p))
+    except OSError:
+        return False
+
+
+def _create_private_temp(dest: Path, qid: str) -> Path:
+    """Cria um temporário de restauração com permissões restritivas.
+
+    O arquivo contém dados em texto claro; se a ACL/modo não puder ser aplicado,
+    a restauração é abortada (fail-secure) em vez de expor o conteúdo.
+    """
+    tmp = dest.with_name(f"{RESTORE_TMP_PREFIX}{qid}-{uuid.uuid4().hex[:8]}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    fd = os.open(tmp, flags, stat.S_IRUSR | stat.S_IWUSR)
+    os.close(fd)
+    if not secure_private_file(tmp):
+        tmp.unlink(missing_ok=True)
+        raise QuarantineError(
+            "Não foi possível proteger o arquivo temporário de restauração; operação abortada.")
+    return tmp
+
+
+def _unlink_quietly(path: Path) -> None:
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError as exc:
+        log.warning("Não foi possível remover resíduo %s: %s", path, exc)
 
 
 class Quarantine:
@@ -158,17 +204,120 @@ class Quarantine:
                     log.error("Falha ao migrar item legado %s (mantido para inspeção): %s", rec["id"], exc)
                 continue
 
-            if rec.get("status") not in RECOVERABLE:
-                continue
+            status = rec.get("status")
             try:
+                if status == "restoring":
+                    if self._recover_restore(rec, meta):
+                        changed.append(rec["id"])
+                    continue
+                if status == "deleting":
+                    if self._recover_delete(rec, meta):
+                        changed.append(rec["id"])
+                    continue
+                if status == "quarantined":
+                    if self._recover_quarantined(rec):
+                        changed.append(rec["id"])
+                    continue
+                if status not in RECOVERABLE:
+                    continue
                 if self._recover_record(rec, meta):
                     changed.append(rec["id"])
             except (QuarantineError, CryptoError, OSError) as exc:
                 log.error("Falha ao recuperar item %s: %s", rec["id"], exc)
-                self.db.update_quarantine(rec["id"], status="failed")
-                self.db.log_action("quarantine_recover", rec.get("original_path", ""),
-                                   f"id={rec['id']}: {exc}", False)
+                try:
+                    self.db.update_quarantine(rec["id"], status="failed")
+                    self.db.log_action("quarantine_recover", rec.get("original_path", ""),
+                                       f"id={rec['id']}: {exc}", False)
+                except sqlite3.Error:
+                    log.exception("Banco indisponível ao registrar falha de recuperação de %s", rec["id"])
         return changed
+
+    def _recover_quarantined(self, rec: dict) -> bool:
+        """Item estável cuja cópia cifrada desapareceu: sinaliza em vez de mascarar."""
+        qid = rec["id"]
+        stored = self._stored_path(rec)
+        if stored.exists():
+            return False
+        self.db.update_quarantine(qid, status="failed")
+        self.db.log_action("quarantine_recover", rec.get("original_path", ""),
+                           f"id={qid}: cópia de quarentena ausente", False)
+        log.error("Cópia de quarentena ausente para o item %s", qid)
+        return True
+
+    def _recover_delete(self, rec: dict, meta: dict) -> bool:
+        """Conclui/desfaz uma exclusão definitiva interrompida."""
+        qid = rec["id"]
+        stored = self._stored_path(rec)
+        if stored.exists():
+            self.db.update_quarantine(qid, status="quarantined", meta=_strip_restore(meta))
+            self.db.log_action("quarantine_recover", rec.get("original_path", ""),
+                               f"id={qid}: exclusão interrompida; item mantido", True)
+            return True
+        clean = _strip_restore(meta)
+        clean.pop("wrapped_key", None)
+        self.db.update_quarantine(qid, status="deleted", meta=clean)
+        self.db.log_action("quarantine_recover", rec.get("original_path", ""),
+                           f"id={qid}: exclusão definitiva concluída", True)
+        return True
+
+    def _recover_restore(self, rec: dict, meta: dict) -> bool:
+        """Reconcilia uma restauração interrompida sem perder o arquivo original.
+
+        Regras: o temporário em texto claro é sempre removido; se o destino já
+        contém o conteúdo autenticado, o banco é finalizado; caso contrário o
+        backup do destino anterior é recolocado e a cópia cifrada é preservada.
+        """
+        qid = rec["id"]
+        journal = meta.get("restore") if isinstance(meta.get("restore"), dict) else {}
+        dest = Path(journal.get("dest") or rec.get("original_path") or "")
+        if not str(dest) or is_dangerous_target(dest) or is_protected(dest) \
+                or _reparse_in_existing_ancestors(dest.parent):
+            log.error("Journal de restauração inválido/perigoso para %s; item mantido.", qid)
+            self.db.update_quarantine(qid, status="quarantined", meta=_strip_restore(meta))
+            self.db.log_action("quarantine_recover", str(dest), f"id={qid}: destino inválido", False)
+            return True
+
+        tmp = Path(journal["tmp"]) if journal.get("tmp") else None
+        backup = Path(journal["backup"]) if journal.get("backup") else None
+        if tmp and _valid_restore_artifact(tmp, dest, RESTORE_TMP_PREFIX):
+            _unlink_quietly(tmp)  # nunca deixar texto claro para trás
+
+        expected = rec.get("sha256") or meta.get("sha256") or ""
+        expected_size = rec.get("size") or meta.get("size")
+        stored = self._stored_path(rec)
+        dest_ok = False
+        if dest.is_file() and not is_reparse_point(dest):
+            try:
+                dest_ok = (not expected or _sha256_path(dest) == expected) and \
+                          (expected_size is None or int(expected_size) == dest.stat().st_size)
+            except (OSError, TypeError, ValueError):
+                dest_ok = False
+
+        if dest_ok:
+            clean = _strip_restore(meta)
+            clean["restored_to"] = str(dest)
+            clean.pop("wrapped_key", None)
+            self.db.update_quarantine(qid, status="restored", meta=clean)
+            if backup and _valid_restore_artifact(backup, dest, RESTORE_BACKUP_PREFIX):
+                _unlink_quietly(backup)
+            if stored.exists():
+                _unlink_quietly(stored)
+            self.db.log_action("restore_recover", str(dest), f"id={qid}: restauração concluída", True)
+            log.info("Restauração interrompida concluída: %s -> %s", qid, dest)
+            return True
+
+        # Destino não contém o conteúdo autenticado: recoloca o backup, se houver.
+        if backup and _valid_restore_artifact(backup, dest, RESTORE_BACKUP_PREFIX):
+            try:
+                os.replace(backup, dest)
+                log.info("Backup do destino anterior recolocado para %s", dest)
+            except OSError as exc:
+                log.error("Falha ao recolocar o backup %s: %s", backup, exc)
+                # Mantém o journal para nova tentativa na próxima inicialização.
+                return False
+        self.db.update_quarantine(qid, status="quarantined", meta=_strip_restore(meta))
+        self.db.log_action("quarantine_recover", str(dest), f"id={qid}: restauração desfeita", True)
+        return True
 
     def _recover_record(self, rec: dict, meta: dict) -> bool:
         qid = rec["id"]
@@ -279,6 +428,12 @@ class Quarantine:
         final = self.dir / stored_name
         part = final.with_name(final.name + ".part")
         acl = capture_acl(src)
+        try:
+            wrapped_key = wrap_key(key, qid)
+        except CryptoError as exc:
+            self.db.log_action("quarantine_refused", str(src),
+                               f"proteção da chave falhou: {exc}", False)
+            raise QuarantineError(f"Não foi possível proteger a chave da quarentena: {exc}") from exc
         meta = {
             "version": 2,
             "mtime_ns": st.st_mtime_ns,
@@ -286,7 +441,7 @@ class Quarantine:
             "attributes": int(getattr(st, "st_file_attributes", 0)),
             "mode": st.st_mode,
             "acl": acl,
-            "wrapped_key": wrap_key(key, qid),
+            "wrapped_key": wrapped_key,
         }
         meta["key_protection"] = meta["wrapped_key"].split(":", 1)[0]
         original_removed = False
@@ -357,8 +512,19 @@ class Quarantine:
     # ------------------------------------------------------------------ restauração
     def restore(self, qid: str, destination=None, overwrite: bool = False,
                 allowed_roots: list | None = None) -> Path:
-        """Restaura um item, verificando autenticidade e SHA-256 antes de gravar o destino."""
+        """Restaura um item, verificando autenticidade e SHA-256 antes de gravar o destino.
+
+        Grava primeiro em um temporário com ACL restritiva, valida tag GCM, SHA-256 e
+        tamanho, preserva o destino anterior em backup (quando ``overwrite=True``) e
+        só remove o arquivo cifrado depois de o banco confirmar o status ``restored``.
+        """
         rec = self.db.get_quarantine(qid)
+        if rec and rec.get("status") == "restoring":
+            # Retoma uma restauração anterior interrompida antes de aceitar um novo pedido.
+            self._recover_restore(rec, self._meta(rec))
+            rec = self.db.get_quarantine(qid)
+            if rec and rec.get("status") == "restored":
+                return Path(self._meta(rec).get("restored_to") or rec.get("original_path"))
         if not rec or rec.get("status") != "quarantined":
             raise QuarantineError("Item inexistente ou já processado.")
         meta = self._meta(rec)
@@ -390,34 +556,132 @@ class Quarantine:
         if is_reparse_point(dest.parent):
             raise QuarantineError("Diretório de destino é link/junction.")
 
-        key = self._key_from_meta(meta, qid)
+        try:
+            key = self._key_from_meta(meta, qid)
+        except CryptoError as exc:
+            raise QuarantineError(f"Chave do item inválida ou inacessível: {exc}") from exc
         expected = rec.get("sha256") or meta.get("sha256") or ""
-        tmp = dest.with_name(f".{dest.name}.restoring.{uuid.uuid4().hex[:8]}")
+        expected_size = rec.get("size") or meta.get("size")
+        try:
+            expected_size = int(expected_size) if expected_size is not None else None
+        except (TypeError, ValueError):
+            expected_size = None
+
+        # Journal write-ahead: se o processo cair, a recuperação saberá o que limpar.
+        tmp = _create_private_temp(dest, qid)
+        journal = {"dest": str(dest), "tmp": str(tmp), "backup": "", "phase": "decrypting"}
+        meta["restore"] = journal
+        try:
+            self.db.update_quarantine(qid, status="restoring", meta=meta)
+        except sqlite3.Error as exc:
+            _unlink_quietly(tmp)
+            raise QuarantineError(f"Não foi possível registrar o início da restauração: {exc}") from exc
+
+        backup: Path | None = None
+        moved_backup = False
+        promoted = False
+        dest_attrs = dest_mode = None
         try:
             digest, size = decrypt_stream(stored, tmp, key, qid, expected or None)
-            expected_size = rec.get("size") or meta.get("size")
-            if expected_size is not None and int(expected_size) != size:
+            if expected_size is not None and expected_size != size:
                 raise QuarantineError("Tamanho restaurado difere do registrado.")
             self._apply_metadata(tmp, meta)
+
+            # Revalida imediatamente antes da promoção (TOCTOU).
             if dest.exists() and not overwrite:
                 raise QuarantineError(f"O destino já existe: {dest}")
+            if _reparse_in_existing_ancestors(dest.parent):
+                raise QuarantineError("Diretório de destino é link/junction.")
+
             if dest.exists():
-                try:  # Windows: destino somente-leitura impede a substituição atômica
-                    os.chmod(dest, 0o600)
+                try:
+                    st = dest.stat()
+                    dest_attrs = int(getattr(st, "st_file_attributes", 0)) or None
+                    dest_mode = stat.S_IMODE(st.st_mode)
                 except OSError:
                     pass
-            os.replace(tmp, dest)
+                backup = dest.with_name(f"{RESTORE_BACKUP_PREFIX}{qid}-{uuid.uuid4().hex[:8]}.tmp")
+                journal["backup"] = str(backup)
+                journal["phase"] = "promoting"
+                self.db.update_quarantine(qid, meta=meta)
+
+                # O destino somente-leitura impede o rename no Windows.
+                try:
+                    os.chmod(dest, stat.S_IWRITE | stat.S_IREAD)
+                except OSError:
+                    pass
+                try:
+                    os.replace(dest, backup)
+                    moved_backup = True
+                except OSError as exc:
+                    raise QuarantineError(
+                        f"Não foi possível preservar o destino existente antes da substituição: {exc}") from exc
+
+            try:
+                os.replace(tmp, dest)
+                promoted = True
+            except OSError as exc:
+                raise QuarantineError(f"Não foi possível promover o arquivo restaurado: {exc}") from exc
+
+            # Primeiro confirma no banco; só depois remove o .qz e o backup.
+            clean_meta = _strip_restore(meta)
+            clean_meta["restored_to"] = str(dest)
+            clean_meta.pop("wrapped_key", None)
+            try:
+                self.db.update_quarantine(qid, status="restored", meta=clean_meta)
+            except sqlite3.Error as exc:
+                # O arquivo já está no destino e o .qz continua intacto; a recuperação
+                # (status "restoring" + journal) concluirá o registro depois.
+                log.error("Restauração de %s promovida, mas o banco não confirmou: %s", qid, exc)
+                raise QuarantineError(
+                    "Arquivo restaurado, mas o registro no banco não pôde ser confirmado; "
+                    "a recuperação na próxima inicialização concluirá.") from exc
+
+            if moved_backup and backup:
+                _unlink_quietly(backup)
+            try:
+                stored.unlink(missing_ok=True)
+            except OSError as exc:
+                log.warning("Item %s restaurado, mas a cópia cifrada não pôde ser removida: %s", qid, exc)
             if not restore_acl(dest, meta.get("acl")):
                 log.debug("ACL não restaurada para %s (sem privilégio ou plataforma não Windows).", dest)
-            clean_meta = {k: v for k, v in meta.items() if k != "wrapped_key"}
-            self.db.update_quarantine(qid, status="restored", meta=clean_meta)
-            stored.unlink(missing_ok=True)
             self.db.log_action("restore", str(dest), f"id={qid} sha256={digest}", True)
             log.info("Restaurado: %s -> %s", qid, dest)
             return dest
-        except (QuarantineError, CryptoError, OSError) as exc:
-            tmp.unlink(missing_ok=True)
-            self.db.log_action("restore_failed", str(dest), f"id={qid}: {exc}", False)
+        except (QuarantineError, CryptoError, OSError, sqlite3.Error) as exc:
+            if not promoted:
+                _unlink_quietly(tmp)
+                journal_failed = False
+                if moved_backup and backup and backup.exists():
+                    try:
+                        if dest.exists():
+                            _unlink_quietly(dest)  # destino parcial; backup é a fonte de verdade
+                        os.replace(backup, dest)
+                        if dest_attrs is not None:
+                            apply_attributes(dest, dest_attrs)
+                        if dest_mode is not None:
+                            apply_mode(dest, dest_mode)
+                        moved_backup = False
+                    except OSError as rb_exc:
+                        journal_failed = True
+                        log.error("Falha ao recolocar o backup de %s: %s", dest, rb_exc)
+                if not journal_failed:
+                    try:
+                        self.db.update_quarantine(qid, status="quarantined", meta=_strip_restore(meta))
+                    except sqlite3.Error:
+                        log.exception("Banco indisponível ao desfazer a restauração de %s", qid)
+                try:
+                    self.db.log_action("restore_failed", str(dest), f"id={qid}: {exc}", False)
+                except sqlite3.Error:
+                    log.exception("Banco indisponível ao registrar falha de restauração de %s", qid)
+            else:
+                # Arquivo promovido: manter journal/status para a recuperação finalizar.
+                try:
+                    self.db.log_action("restore_pending", str(dest),
+                                       f"id={qid}: arquivo promovido; banco pendente: {exc}", False)
+                except sqlite3.Error:
+                    log.exception("Banco indisponível ao registrar restauração pendente de %s", qid)
+                log.error("Restauração de %s promovida, mas pendente de confirmação: %s", qid, exc)
             if isinstance(exc, QuarantineError):
                 raise
             raise QuarantineError(f"Falha ao restaurar o item: {exc}") from exc
@@ -431,17 +695,37 @@ class Quarantine:
             raise QuarantineError("Item inexistente ou já processado.")
         stored = self._stored_path(rec)
         try:
-            stored.unlink(missing_ok=True)
-        except OSError as exc:
-            self.db.log_action("quarantine_delete", rec.get("original_path", ""),
-                               f"id={qid}: {exc}", False)
-            raise QuarantineError(f"Não foi possível apagar o item: {exc}") from exc
-        try:
             meta = self._meta(rec)
         except QuarantineError:
             meta = {}
+
+        # Journal: se cair entre o unlink e o UPDATE, a recuperação conclui o estado.
+        try:
+            self.db.update_quarantine(qid, status="deleting")
+        except sqlite3.Error as exc:
+            raise QuarantineError(f"Não foi possível registrar a exclusão: {exc}") from exc
+        try:
+            stored.unlink(missing_ok=True)
+            if stored.exists():
+                raise OSError("o arquivo de quarentena ainda existe")
+        except OSError as exc:
+            try:
+                self.db.update_quarantine(qid, status="quarantined")
+            except sqlite3.Error:
+                log.exception("Banco indisponível ao desfazer a exclusão de %s", qid)
+            self.db.log_action("quarantine_delete", rec.get("original_path", ""),
+                               f"id={qid}: {exc}", False)
+            raise QuarantineError(f"Não foi possível apagar o item: {exc}") from exc
         meta.pop("wrapped_key", None)  # remove o material de chave do banco
-        self.db.update_quarantine(qid, status="deleted", meta=meta)
+        try:
+            self.db.update_quarantine(qid, status="deleted", meta=_strip_restore(meta))
+        except sqlite3.Error as exc:
+            # O arquivo já foi removido; o status "deleting" permite à recuperação
+            # concluir o registro na próxima inicialização.
+            log.error("Exclusão de %s concluída, mas o banco não confirmou: %s", qid, exc)
+            raise QuarantineError(
+                "Arquivo removido, mas o registro não pôde ser confirmado; a recuperação "
+                "na próxima inicialização concluirá.") from exc
         self.db.log_action("quarantine_delete", rec.get("original_path", ""), f"id={qid}", True)
         log.info("Item de quarentena removido definitivamente: %s", qid)
 

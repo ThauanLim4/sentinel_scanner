@@ -9,7 +9,9 @@ Formato de um arquivo ``.qz`` (versão 1)::
   puro no SQLite.
 - No Windows a chave é embrulhada com DPAPI (escopo do usuário atual). Em outros
   sistemas (ou se o DPAPI falhar) é usado um *key wrapping* AES-GCM com uma chave
-  mestra local de 32 bytes, criada com permissões restritas.
+  mestra local de 32 bytes. Essa chave exige ACL restritiva (Windows) ou modo 0600
+  (POSIX); se não for possível comprovar a proteção, a operação falha em vez de
+  usar uma chave potencialmente exposta.
 - O ``item_id`` (UUID da quarentena) entra como AAD (*additional authenticated
   data*), ligando o conteúdo ao registro do banco: trocar o arquivo de lugar ou
   reaproveitar o registro de outro item faz a autenticação falhar.
@@ -30,7 +32,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from . import config
+from . import config, win_security
 from .logger import get_logger
 
 log = get_logger(__name__)
@@ -206,6 +208,24 @@ def _master_key_path() -> Path:
     return Path(config.DATA_DIR) / "keys" / "master.key"
 
 
+def _protect_master_key(path: Path) -> bool:
+    """Garante que a chave mestra só seja legível pelo usuário atual/SYSTEM/Admins.
+
+    No Windows ``os.open(..., 0o600)`` NÃO define ACL; por isso aplicamos uma DACL
+    restritiva e verificamos o resultado. Em POSIX aplicamos ``chmod 600`` e
+    verificamos que nenhum bit de grupo/outros permanece.
+    """
+    try:
+        if win_security.verify_private_file(path):
+            return True
+        if win_security.secure_private_file(path):
+            log.info("Permissões da chave mestra restringidas: %s", path)
+            return True
+    except (OSError, ValueError) as exc:
+        log.error("Falha ao proteger a chave mestra %s: %s", path, exc)
+    return False
+
+
 def _load_master_key() -> bytes:
     path = _master_key_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -213,16 +233,31 @@ def _load_master_key() -> bytes:
         data = path.read_bytes()
         if len(data) != KEY_LEN:
             raise CryptoError(f"Chave mestra corrompida: {path}")
+        if not _protect_master_key(path):
+            # Não use silenciosamente uma chave potencialmente legível por outros
+            # usuários. Falhar aqui preserva a confidencialidade dos itens antigos
+            # (a chave continua no disco, mas nenhuma operação é feita com ela).
+            raise CryptoError(
+                f"A chave mestra {path} possui permissões inseguras e não foi possível "
+                "restringi-las; fallback local recusado por segurança.")
         return data
+
     key = secrets.token_bytes(KEY_LEN)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-    # 0o600 é aplicado em POSIX; no Windows a ACL do perfil do usuário já restringe.
     fd = os.open(path, flags, stat.S_IRUSR | stat.S_IWUSR)
     try:
         os.write(fd, key)
         os.fsync(fd)
     finally:
         os.close(fd)
+    if not _protect_master_key(path):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            log.error("Falha ao remover chave mestra insegura %s: %s", path, exc)
+        raise CryptoError(
+            "Não foi possível proteger a chave mestra local com ACLs restritivas; "
+            "fallback recusado por segurança (DPAPI é obrigatório neste ambiente).")
     return key
 
 
@@ -252,7 +287,12 @@ def wrap_key(key: bytes, item_id: str) -> str:
             blob = _dpapi_call(True, key, aad)
             return _DPAPI_PREFIX + base64.b64encode(blob).decode("ascii")
         except (CryptoError, OSError) as exc:
-            log.warning("DPAPI indisponível (%s); usando chave mestra local como fallback.", exc)
+            log.warning("DPAPI indisponível (%s); tentando chave mestra local protegida.", exc)
+            try:
+                return _master_wrap(key, aad)
+            except CryptoError as mk_exc:
+                raise CryptoError(
+                    f"DPAPI falhou e a chave mestra local não pôde ser protegida: {mk_exc}") from mk_exc
     return _master_wrap(key, aad)
 
 

@@ -349,14 +349,13 @@ class StartupManager:
     def is_critical(e: StartupEntry) -> bool:
         if e.kind == "driver":
             return True
-        if e.kind in ("service", "task"):
-            # Usa o alvo já avaliado ou reextrai do comando: uma entrada criada
-            # manualmente (sem passar por evaluate) não pode burlar a proteção.
-            exe = e.exe or split_command(normalize_nt(expand_env(e.command)))[0]
-            if exe and under_windir(exe):
-                return True
-            if e.kind == "task" and e.extra.get("task_path", "").lower().startswith("\\microsoft\\windows\\"):
-                return True
+        # Usa o alvo já avaliado ou reextrai do comando: uma entrada criada
+        # manualmente (sem passar por evaluate) não pode burlar a proteção.
+        exe = e.exe or split_command(normalize_nt(expand_env(e.command)))[0]
+        if exe and under_windir(exe):
+            return True
+        if e.kind == "task" and e.extra.get("task_path", "").lower().startswith("\\microsoft\\windows\\"):
+            return True
         return False
 
     def _backup_key(self, hive, key):

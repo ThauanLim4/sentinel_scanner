@@ -197,7 +197,8 @@ class Scanner:
                 st = root.stat()
                 yield str(root), st.st_size, st.st_mtime_ns
             except OSError:
-                self.inaccessible += 1
+                with self._lock:
+                    self.inaccessible += 1
             return
         stack = [str(root)]
         while stack and not self._cancel.is_set():
@@ -206,7 +207,8 @@ class Scanner:
                 with os.scandir(d) as it:
                     entries = list(it)
             except OSError:
-                self.inaccessible += 1
+                with self._lock:
+                    self.inaccessible += 1
                 continue
             sensitive = explicit or any(m in norm(d) + "\\" for m in SENSITIVE_MARKERS)
             for e in entries:
@@ -228,7 +230,8 @@ class Scanner:
                             continue
                         yield e.path, st.st_size, st.st_mtime_ns
                 except OSError:
-                    self.inaccessible += 1
+                    with self._lock:
+                        self.inaccessible += 1
 
     def _worker(self, q: queue.Queue):
         clean: list[tuple] = []

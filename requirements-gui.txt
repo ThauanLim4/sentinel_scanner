@@ -1,0 +1,6 @@
+# Dependências da interface gráfica (etapa FUTURA; não usadas na Etapa 2.2).
+-r requirements.txt
+PySide6>=6.6
+
+# Opcional: consulta de reputação por hash (desligada por padrão).
+requests>=2.31
