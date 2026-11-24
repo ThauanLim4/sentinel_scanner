@@ -80,13 +80,20 @@ class Database:
             (scan_id, f.path, f.sha256, f.category, f.risk.label, f.score,
              json.dumps(f.to_dict(), ensure_ascii=False))).lastrowid
 
-    def list_findings(self, scan_id: int | None = None, status: str | None = None):
-        sql, p = "SELECT * FROM findings WHERE 1=1", []
+    def list_findings(self, scan_id: int | None = None, status: str | None = None,
+                      limit: int | None = None):
+        # `ts` é a data da varredura associada (a tabela findings não tem timestamp próprio).
+        sql, p = ("SELECT findings.*, scans.started AS ts FROM findings "
+                  "LEFT JOIN scans ON findings.scan_id=scans.id WHERE 1=1"), []
         if scan_id is not None:
-            sql += " AND scan_id=?"; p.append(scan_id)
+            sql += " AND findings.scan_id=?"; p.append(scan_id)
         if status:
-            sql += " AND status=?"; p.append(status)
-        return self._query(sql + " ORDER BY score DESC", p)
+            sql += " AND findings.status=?"; p.append(status)
+        sql += " ORDER BY findings.score DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            p.append(int(limit))
+        return self._query(sql, p)
 
     def set_finding_status(self, finding_id: int, status: str):
         self._exec("UPDATE findings SET status=? WHERE id=?", (status, finding_id))
@@ -115,8 +122,9 @@ class Database:
         self._exec("INSERT INTO actions(ts,action,target,detail,success) VALUES(?,?,?,?,?)",
                    (now(), action, target, detail, int(success)))
 
-    def list_actions(self, limit: int = 500):
-        return self._query("SELECT * FROM actions ORDER BY id DESC LIMIT ?", (limit,))
+    def list_actions(self, limit: int = 500, offset: int = 0):
+        return self._query("SELECT * FROM actions ORDER BY id DESC LIMIT ? OFFSET ?",
+                           (int(limit), int(offset)))
 
     # --- cache de hashes --------------------------------------------------
     def get_cached(self, path: str, size: int, mtime_ns: int):
@@ -169,10 +177,17 @@ class Database:
         rows = self._query("SELECT * FROM quarantine WHERE id=?", (qid,))
         return rows[0] if rows else None
 
-    def list_quarantine(self, status: str | None = "quarantined"):
+    def list_quarantine(self, status: str | None = "quarantined", limit: int | None = None):
+        sql = "SELECT * FROM quarantine"
+        params: list = []
         if status:
-            return self._query("SELECT * FROM quarantine WHERE status=? ORDER BY ts DESC", (status,))
-        return self._query("SELECT * FROM quarantine ORDER BY ts DESC")
+            sql += " WHERE status=?"
+            params.append(status)
+        sql += " ORDER BY ts DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        return self._query(sql, params)
 
     def set_quarantine_status(self, qid: str, status: str):
         self._exec("UPDATE quarantine SET status=? WHERE id=?", (status, qid))

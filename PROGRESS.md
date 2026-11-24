@@ -2,7 +2,7 @@
 
 Atualizado em: 2026-11-24
 Etapa atual: **3 — interface gráfica com PySide6**
-Interface gráfica: **em desenvolvimento por fases (Fases A, B, C, D e E concluídas)**
+Interface gráfica: **em desenvolvimento por fases (Fases A, B, C, D, E e F concluídas)**
 Executável: **fora do escopo desta etapa**
 
 ## Estado real
@@ -140,6 +140,36 @@ Arquivos criados nesta fase: `gui/views/quarantine_view.py`, `gui/views/defender
 Modificados: `gui/views/__init__.py`, `gui/workers/quarantine_worker.py`,
 `gui/workers/defender_worker.py`, `gui/context.py`, `gui/formatting.py` e
 `core/quarantine.py` (apenas assinatura aditiva de `list_items`).
+
+## Etapa 3 — Fase F (concluída)
+
+Telas de Limpeza e Histórico com prévia, confirmação e leitura incremental do banco.
+
+- [x] **Limpeza**: categorias fornecidas por `cleanup.build_categories()`, estimativa por
+      categoria, prévia individual com caminho/tamanho/idade/categoria e seleção de arquivos.
+      A limpeza exige confirmação na tela e `confirmed=True` na fábrica; somente os caminhos
+      marcados são enviados ao novo filtro aditivo `clean(..., only_paths=...)`, que mantém
+      todas as revalidações do núcleo (raízes, links, arquivos pessoais e proteção).
+- [x] Lixeira é uma categoria opcional, nunca incluída por padrão na execução; confirmar a
+      limpeza com ela exige reconhecimento adicional e não há prévia individual dessa API.
+- [x] Espaço estimado (antes) e bytes de arquivos removidos (depois) são exibidos em campos
+      separados, com aviso de que não representam necessariamente o aumento de espaço livre.
+      Cancelamento cooperativo, erros por categoria e resultados parciais são exibidos.
+- [x] **Histórico**: varreduras, detecções, quarentena e ações reais do banco em uma tabela
+      cronológica, com filtros de categoria/período/busca, carregamento incremental, detalhes
+      e indicação de sucesso/falha/parcial. `Database` recebeu apenas parâmetros aditivos de
+      limite/offset e `ts` derivado da varredura para detecções.
+- [x] Limitação explícita na tela: consultas ao Defender não são gravadas pelo núcleo; só
+      atualizações e verificações confirmadas aparecem como ações.
+- [x] Validação offscreen com categorias/arquivos sintéticos, `cleanup` simulado (sem remoção
+      real) e banco temporário: prévia, confirmação recusada/aceita, seleção individual,
+      recusa sem confirmação, Lixeira, filtros, busca e incremental.
+- [x] Suíte existente preservada: **145 testes, OK (3 ignorados)**.
+
+Arquivos criados nesta fase: `gui/views/cleanup_view.py`, `gui/views/history_view.py`,
+`gui/workers/history_worker.py`. Modificados: `gui/views/__init__.py`,
+`gui/workers/cleanup_worker.py`, `gui/context.py`, `database/database.py` e
+`core/cleanup.py` (filtro aditivo `only_paths`).
 
 ## Concluído na Etapa 2.2
 

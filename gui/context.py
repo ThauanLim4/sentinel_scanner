@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core import config
+from core import cleanup, config
 from core.defender import DefenderClient
 from core.logger import get_logger
 from core.network_analyzer import NetworkAnalyzer
@@ -115,6 +115,13 @@ class AppContext:
             else:
                 self._startup_manager = StartupManager(db=self._db)
         return self._startup_manager
+
+    def make_cleanup_categories(self) -> list:
+        """Categorias definidas pelo núcleo; a tela não inventa raízes nem padrões."""
+        override = self._override("cleanup_categories")
+        if override is not None:
+            return override() if callable(override) else override
+        return cleanup.build_categories()
 
     def make_scanner(self, workers: int | None = None, cpu_limit: int | None = None) -> Scanner:
         override = self._override("scanner")

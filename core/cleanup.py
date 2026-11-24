@@ -209,7 +209,13 @@ def _allowed_protected(cat: Category, path: Path) -> bool:
 
 
 def clean(cat: Category, db=None, cancel: Callable[[], bool] | None = None,
-          progress: Callable[[str], None] | None = None, confirmed: bool = False) -> CleanupResult:
+          progress: Callable[[str], None] | None = None, confirmed: bool = False,
+          only_paths: set[str] | None = None) -> CleanupResult:
+    """Remove arquivos elegíveis de ``cat``.
+
+    ``only_paths`` é um filtro aditivo para a prévia individual da interface:
+    os caminhos ainda passam por todas as revalidações de segurança abaixo.
+    """
     res = CleanupResult()
     if cat.kind == "recycle":
         if not confirmed:
@@ -237,6 +243,8 @@ def clean(cat: Category, db=None, cancel: Callable[[], bool] | None = None,
     for path, size, root in list(_iter_files(cat)):
         if cancel and cancel():
             break
+        if only_paths is not None and str(path) not in only_paths:
+            continue
         # Revalida imediatamente antes de excluir (TOCTOU / junction criada no meio).
         if (not is_within(path, root) or is_reparse_point(path) or has_reparse_in_chain(path, root)
                 or _is_personal_for_category(cat, path)

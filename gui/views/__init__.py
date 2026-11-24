@@ -4,8 +4,10 @@ from __future__ import annotations
 from ..components.sidebar import NAV_ITEMS
 from ..context import AppContext
 from .base_view import BaseView
+from .cleanup_view import CleanupView
 from .dashboard_view import DashboardView
 from .defender_view import DefenderView
+from .history_view import HistoryView
 from .network_view import NetworkView
 from .placeholder_view import PlaceholderView
 from .processes_view import ProcessesView
@@ -44,6 +46,10 @@ def build_views(context: AppContext) -> dict[str, BaseView]:
             views[key] = QuarantineView(context)
         elif key == "defender":
             views[key] = DefenderView(context)
+        elif key == "cleanup":
+            views[key] = CleanupView(context)
+        elif key == "history":
+            views[key] = HistoryView(context)
         else:
             views[key] = PlaceholderView(context, key, title, SUBTITLES.get(key, ""))
     return views
