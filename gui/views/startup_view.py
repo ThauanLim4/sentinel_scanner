@@ -582,6 +582,8 @@ class StartupView(BaseView):
             "success", f"Entrada {verb}",
             f"{entry.name} foi {verb} pelo núcleo.{detail}")
         self.success(f"Entrada {verb}", f"{entry.name}.{detail}".strip())
+        # Toda alteração confirmada é registrada pelo núcleo em `actions`.
+        self.emit_data_changed()
         self.status_badge.setText("Atualizado")
         self.status_badge.set_level("safe")
         self.status_label.setText(

@@ -263,6 +263,8 @@ class CleanupView(BaseView):
             return
         if self._worker_kind == "clean":
             self._render_clean_result(result)
+            # Cada exclusão confirmada é registrada pelo núcleo em `actions`.
+            self.emit_data_changed()
             self._needs_refresh = True
 
     def _show_analysis_warnings(self) -> None:

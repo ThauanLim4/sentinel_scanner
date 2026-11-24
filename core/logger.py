@@ -27,6 +27,22 @@ def setup_logging(level: int = logging.INFO) -> None:
     _configured = True
 
 
+def set_level(level: str | int) -> str:
+    """Ajusta o nível do logger raiz em tempo real e devolve o nome aplicado.
+
+    Usado pela interface quando o usuário altera `log_level`: nenhuma reinicialização
+    é necessária e um valor inválido cai para INFO (o mesmo critério de `Settings`).
+    """
+    if isinstance(level, str):
+        value = getattr(logging, level.strip().upper(), None)
+        if not isinstance(value, int):
+            value = logging.INFO
+    else:
+        value = int(level)
+    logging.getLogger("sentinel").setLevel(value)
+    return logging.getLevelName(value)
+
+
 def get_logger(name: str) -> logging.Logger:
     setup_logging()
     return logging.getLogger("sentinel." + name.split(".")[-1])

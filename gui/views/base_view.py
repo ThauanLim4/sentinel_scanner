@@ -13,7 +13,12 @@ log = get_logger("gui.views")
 
 
 class BaseView(QWidget):
+    # Sinais de integração: `data_changed` indica que o banco/estado real mudou
+    # (o Dashboard precisa ser invalidado); `settings_changed` carrega as chaves
+    # alteradas para a janela aplicar tema/nível de log em tempo real.
     system_status_changed = Signal(str, str)
+    data_changed = Signal()
+    settings_changed = Signal(object)
 
     KEY = ""
     TITLE = ""
@@ -77,3 +82,9 @@ class BaseView(QWidget):
 
     def set_system_status(self, text: str, level: str) -> None:
         self.system_status_changed.emit(text, level)
+
+    def emit_data_changed(self) -> None:
+        self.data_changed.emit()
+
+    def emit_settings_changed(self, keys) -> None:
+        self.settings_changed.emit(list(keys))

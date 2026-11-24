@@ -13,6 +13,7 @@ from .placeholder_view import PlaceholderView
 from .processes_view import ProcessesView
 from .quarantine_view import QuarantineView
 from .scanner_view import ScannerView
+from .settings_view import SettingsView
 from .startup_view import StartupView
 
 SUBTITLES = {
@@ -20,7 +21,7 @@ SUBTITLES = {
     "scanner": "Análise de arquivos com progresso, cancelamento e resultados",
     "processes": "Processos ativos, indicadores e encerramento seguro",
     "network": "Conexões ativas e correlação com processos",
-    "startup": "Mecanismos de inicialização do Windows (somente leitura por padrão)",
+    "startup": "Mecanismos de inicialização do Windows (alterações reversíveis e confirmadas)",
     "quarantine": "Itens isolados com restauração e exclusão confirmadas",
     "cleanup": "Limpeza conservadora de arquivos temporários",
     "defender": "Estado, definições e histórico do Microsoft Defender",
@@ -50,6 +51,8 @@ def build_views(context: AppContext) -> dict[str, BaseView]:
             views[key] = CleanupView(context)
         elif key == "history":
             views[key] = HistoryView(context)
+        elif key == "settings":
+            views[key] = SettingsView(context)
         else:
             views[key] = PlaceholderView(context, key, title, SUBTITLES.get(key, ""))
     return views

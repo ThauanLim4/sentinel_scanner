@@ -479,6 +479,8 @@ class ProcessesView(BaseView):
     def _on_terminate_finished(self) -> None:
         self._terminating = False
         if self._terminated_ok:
+            # O núcleo registra o encerramento em `actions`.
+            self.emit_data_changed()
             if self._terminated_pid is not None:
                 self._entries = [e for e in self._entries if e.pid != self._terminated_pid]
             self.status_badge.setText("Atualizado")

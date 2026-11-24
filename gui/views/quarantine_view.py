@@ -326,6 +326,8 @@ class QuarantineView(BaseView):
             self.banner.set_message("success", "Exclusão definitiva confirmada",
                                     "A cópia isolada foi removida pelo núcleo.")
             self.success("Exclusão definitiva concluída")
+        if kind in ("restore", "delete"):
+            self.emit_data_changed()
         self._needs_refresh = True
 
     def _on_error(self, message: str, details: str = "") -> None:

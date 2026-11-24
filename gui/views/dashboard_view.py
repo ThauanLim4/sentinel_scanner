@@ -244,6 +244,7 @@ class DashboardView(BaseView):
         self._defender_running = False
         self._process_running = False
         self._loaded = False
+        self._refresh_pending = False
         self._assessment: ProtectionAssessment | None = None
         super().__init__(context, parent)
 
@@ -342,9 +343,25 @@ class DashboardView(BaseView):
     # ------------------------------------------------------------------ dados
     def on_activate(self) -> None:
         super().on_activate()
-        self.refresh(force=False)
+        if self._refresh_pending:
+            self._refresh_pending = False
+            self.refresh(force=True)
+        else:
+            self.refresh(force=False)
+
+    def invalidate(self) -> None:
+        """Marca os dados como desatualizados após uma mudança real no banco.
+
+        Se a tela estiver visível, recarrega imediatamente; caso contrário o
+        recarregamento ocorre ao abrir o Dashboard novamente.
+        """
+        self._refresh_pending = True
+        if self.isVisible():
+            self._refresh_pending = False
+            self.refresh(force=True)
 
     def refresh_forced(self) -> None:
+        self._refresh_pending = False
         self.refresh(force=True)
 
     def refresh(self, force: bool = False) -> None:

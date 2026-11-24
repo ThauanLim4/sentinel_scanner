@@ -380,9 +380,12 @@ class DefenderView(BaseView):
                 self.banner.set_message("danger", "Atualização não confirmada",
                                         "Não afirmar que as definições estão atualizadas.")
             self._log_warning(result)
+            # O núcleo registra a operação em `actions` com o resultado real.
+            self.emit_data_changed()
             return
         if kind.startswith("scan_"):
             self._render_scan_result(kind[5:], result)
+            self.emit_data_changed()
             return
 
     def _render_status(self) -> None:

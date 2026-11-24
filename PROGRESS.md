@@ -2,7 +2,7 @@
 
 Atualizado em: 2026-11-24
 Etapa atual: **3 — interface gráfica com PySide6**
-Interface gráfica: **em desenvolvimento por fases (Fases A, B, C, D, E e F concluídas)**
+Interface gráfica: **em desenvolvimento por fases (Fases A, B, C, D, E, F e G concluídas)**
 Executável: **fora do escopo desta etapa**
 
 ## Estado real
@@ -171,6 +171,40 @@ Arquivos criados nesta fase: `gui/views/cleanup_view.py`, `gui/views/history_vie
 `gui/workers/cleanup_worker.py`, `gui/context.py`, `database/database.py` e
 `core/cleanup.py` (filtro aditivo `only_paths`).
 
+## Etapa 3 — Fase G (concluída)
+
+Tela de Configurações e integração das dez telas reais.
+
+- [x] **Configurações**: tema, notificações não críticas, confirmação ao fechar durante
+      operações, `scan_workers` e `cpu_limit`, pastas da varredura personalizada, exclusões
+      locais e `log_level`. Todas as opções exibidas têm efeito verificável: as listas são
+      consumidas por `Scanner.run(..., exclude_paths=...)` e `AppContext.make_scanner()`;
+      tema e nível de log são aplicados na mesma sessão; notificações e confirmação de
+      fechamento são lidas pela janela principal. Idioma é fixo e nenhuma opção decorativa
+      foi criada. Persistência atômica em `data/gui_settings.json` (sem Registro).
+- [x] Integração: `BaseView` passou a emitir `data_changed` e `settings_changed`;
+      `MainWindow` aplica tema/nível de log em tempo real e invalida o Dashboard após
+      varreduras, quarentena, Defender, limpeza, encerramento de processos e alterações
+      de inicialização. O Dashboard recarrega imediatamente se estiver visível e marca
+      atualização pendente caso esteja oculto.
+- [x] Notificações: com a opção desligada, apenas erros (`danger`) e avisos (`warning`)
+      continuam visíveis; mensagens informativas/de sucesso são registradas no log.
+- [x] Scanner passa a reler pastas e exclusões ao abrir, refletindo edições feitas em
+      Configurações. Subtítulo de Inicialização unificado entre o registro de telas e a view.
+- [x] `core/logger.py` ganhou `set_level()` aditivo, também usado no ponto de entrada.
+- [x] Validação offscreen: dez telas reais (nenhum placeholder), gravação/recarga das
+      preferências, aplicação imediata de tema e log, compartilhamento de listas com o
+      Scanner, supressão de notificações não críticas, invalidação do Dashboard,
+      navegação pelas dez telas nas resoluções 1366×768, 1280×720 e 1920×1080 e
+      ponto de entrada `python -m sentinel` com `app.exec()` interceptado (sem loop real).
+- [x] Suíte existente preservada: **145 testes, OK (3 ignorados)**.
+
+Arquivos criados nesta fase: `gui/views/settings_view.py`. Modificados: `core/logger.py`,
+`gui/app.py`, `gui/main_window.py`, `gui/views/base_view.py`, `gui/views/dashboard_view.py`,
+`gui/views/__init__.py`, `gui/views/scanner_view.py`, `gui/views/processes_view.py`,
+`gui/views/startup_view.py`, `gui/views/quarantine_view.py`, `gui/views/defender_view.py` e
+`gui/views/cleanup_view.py`.
+
 ## Concluído na Etapa 2.2
 
 ### P0 — Quarentena
@@ -220,7 +254,8 @@ Arquivos criados nesta fase: `gui/views/cleanup_view.py`, `gui/views/history_vie
 - [ ] Teste de symlink em ambiente com privilégio de criação (o ambiente atual ignora esse teste).
 - [ ] Teste com disco realmente cheio e arquivo bloqueado por outro processo (simulados por mock).
 - [ ] Revisão de desempenho em volumes grandes e em unidades de rede/nuvem.
-- [ ] Implementação das telas de Limpeza, Histórico e Configurações (Fases F e G).
+- [ ] Fase H: testes GUI versionados, auditoria final de threads/banco/responsividade e
+      documentação final (`README.md`, `RELATORIO_ETAPA_3.md`).
 - [ ] Empacotamento em executável (etapa futura).
 - [ ] Mecanismo de atualização de assinaturas (apenas proposto, não implementado).
 
@@ -228,7 +263,7 @@ Arquivos criados nesta fase: `gui/views/cleanup_view.py`, `gui/views/history_vie
 
 1. Validar manualmente o núcleo em VM Windows 10/11 descartável, com e sem administrador.
 2. Revisar os tempos de varredura e a amostragem de CPU/GPU em hardware real.
-3. Concluir as Fases F (Limpeza/Histórico), G (Configurações/integração) e H (auditoria/testes)
-   da Etapa 3, consumindo a API do núcleo sem duplicar regras de segurança.
+3. Concluir a Fase H (auditoria/testes/documentação) da Etapa 3, consumindo a API do núcleo
+   sem duplicar regras de segurança.
 4. Definir e implementar o formato de assinaturas com assinatura digital e atualização segura,
    conforme a proposta do relatório.

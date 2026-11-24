@@ -1,6 +1,8 @@
 """Janela principal: navegação, cabeçalho, notificações e ciclo de vida."""
 from __future__ import annotations
 
+from functools import partial
+
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import (
     QApplication,
@@ -12,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from core import config
-from core.logger import get_logger
+from core.logger import get_logger, set_level
 from .components.confirmation_dialog import confirm_action
 from .components.header import Header
 from .components.notification import NotificationCenter, NotificationPanel, Toast
@@ -63,6 +65,8 @@ class MainWindow(QMainWindow):
         for key in self._keys:
             view = self.views[key]
             view.system_status_changed.connect(self._on_system_status)
+            view.data_changed.connect(partial(self._on_data_changed, key))
+            view.settings_changed.connect(self._on_settings_changed)
             self.stack.addWidget(view)
 
         self.sidebar.navigate.connect(self.navigate)
@@ -101,7 +105,10 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ notificações
     def notify(self, level: str, title: str, message: str = "") -> None:
         enabled = bool(self.context.settings.get("notifications", True))
-        important = level in ("danger", "warning", "success") or level == "safe"
+        # Apenas erros e avisos são críticos: continuam visíveis mesmo com as
+        # notificações não críticas desligadas. Sucesso/info passam a ser apenas
+        # registrados no log.
+        important = level in ("danger", "warning")
         if not enabled and not important:
             log.info("%s: %s", title, message)
             return
@@ -160,6 +167,24 @@ class MainWindow(QMainWindow):
     def _on_system_status(self, text: str, level: str) -> None:
         self.header.set_status(text, level)
         self.statusBar().showMessage(f"Proteção: {text}", 10000)
+
+    def _on_data_changed(self, source_key: str) -> None:
+        """Operações com efeito real invalidam os dados exibidos no Dashboard."""
+        if source_key == "dashboard":
+            return
+        dashboard = self.views.get("dashboard")
+        invalidate = getattr(dashboard, "invalidate", None)
+        if callable(invalidate):
+            invalidate()
+
+    def _on_settings_changed(self, keys) -> None:
+        changed = set(keys or [])
+        if "theme" in changed:
+            self.apply_theme(str(self.context.settings.get("theme", "dark")))
+        if "log_level" in changed:
+            applied = set_level(str(self.context.settings.get("log_level", "INFO")))
+            self.statusBar().showMessage(f"Nível de log aplicado: {applied}", 5000)
+        log.info("Preferências aplicadas: %s", ", ".join(sorted(changed)) or "nenhuma")
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - API Qt
         super().resizeEvent(event)

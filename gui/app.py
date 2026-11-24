@@ -1,7 +1,6 @@
 """Inicialização única da interface gráfica do Sentinel Scanner."""
 from __future__ import annotations
 
-import logging
 import sys
 
 from PySide6.QtCore import Qt
@@ -9,7 +8,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from core import config
-from core.logger import get_logger, setup_logging
+from core.logger import get_logger, set_level, setup_logging
 from .components.icons import logo_icon
 from .context import AppContext
 from .main_window import MainWindow
@@ -49,8 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         app = create_application(argv)
         settings = Settings()
-        level_name = str(settings.get("log_level", "INFO"))
-        logging.getLogger("sentinel").setLevel(getattr(logging, level_name, logging.INFO))
+        set_level(str(settings.get("log_level", "INFO")))
         app.setStyleSheet(stylesheet(str(settings.get("theme", "dark"))))
         context = AppContext(settings=settings)
         window = MainWindow(context)

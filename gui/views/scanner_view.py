@@ -566,6 +566,8 @@ class ScannerView(BaseView):
         self._worker = None
         self._running = False
         self._update_result_actions()
+        # A varredura (concluída, falha ou cancelada) grava seu status no banco.
+        self.emit_data_changed()
         if self.cancel_button.text() == "Cancelando…":
             self.cancel_button.setText("Cancelar varredura")
             self.cancel_button.setEnabled(False)
@@ -706,6 +708,7 @@ class ScannerView(BaseView):
             self._load_findings(self._scan_id)
             self._render_results()
         self.phase_label.setText("Arquivo isolado em quarentena.")
+        self.emit_data_changed()
 
     def _on_quarantine_error(self, message: str, details: str = "") -> None:
         self.context.log.warning("Quarentena falhou: %s", message)
@@ -751,6 +754,10 @@ class ScannerView(BaseView):
     # ------------------------------------------------------------------ ativação
     def on_activate(self) -> None:
         super().on_activate()
+        # Pastas e exclusões podem ter sido editadas na tela de Configurações.
+        if not self._running:
+            self.path_list.clear()
+            self._load_folders()
         self._update_exclusions_label()
         if self._running or self._loaded_last:
             return
