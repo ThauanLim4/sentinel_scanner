@@ -26,6 +26,19 @@ def _clip_int(value, low: int, high: int, default: int) -> int:
         return default
 
 
+def _clip_bool(value, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().casefold()
+        if text in ("1", "true", "sim", "yes", "on"):
+            return True
+        if text in ("0", "false", "nao", "não", "no", "off"):
+            return False
+        return default
+    return bool(value)
+
+
 class Settings:
     """Configurações simples com gravação atômica.
 
@@ -61,10 +74,17 @@ class Settings:
             value = self._data.get(key)
             if not isinstance(value, list):
                 value = []
-            self._data[key] = [str(v) for v in value if str(v).strip()]
-        self._data["notifications"] = bool(self._data.get("notifications", True))
-        self._data["confirm_close_during_scan"] = bool(
-            self._data.get("confirm_close_during_scan", True))
+            paths = []
+            for item in value:
+                if item is None:
+                    continue
+                text = str(item).strip()
+                if text:
+                    paths.append(text)
+            self._data[key] = paths
+        self._data["notifications"] = _clip_bool(self._data.get("notifications", True), True)
+        self._data["confirm_close_during_scan"] = _clip_bool(
+            self._data.get("confirm_close_during_scan", True), True)
 
     def get(self, key: str, default=None):
         return self._data.get(key, default)

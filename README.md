@@ -2,20 +2,22 @@
 
 Ferramenta defensiva em Python para **Windows**, com foco em análise de ameaças, monitoramento de
 processos, detecção de persistência, análise de rede, quarentena criptografada e manutenção segura.
-O projeto está na **Etapa 2.2 (hardening do núcleo)**.
+O núcleo foi hardeningado na Etapa 2.2 e a **interface gráfica (Etapa 3) está concluída**.
 
-> **Estado atual:** o núcleo é executável e a suíte automatizada passa no ambiente de
+> **Estado atual:** o núcleo e a GUI são executáveis e a suíte automatizada passa no ambiente de
 > desenvolvimento. **Não** é um produto pronto para uso real, não substitui um antivírus e **não**
-> deve ser usado para limpezas amplas sem revisão. A interface gráfica e o executável **não** fazem
-> parte desta etapa.
+> deve ser usado para limpezas amplas sem revisão. A GUI consome apenas as APIs do núcleo; não há
+> empacotamento em executável nem mecanismo de atualização de assinaturas.
 
 ## Requisitos
 
 - Windows 10 ou 11 (os testes automatizados também rodam em outros sistemas quando aplicável).
 - Python 3.10+ (ambiente validado com Python 3.14).
 - Dependências do núcleo: `psutil`, `cryptography`.
+- Interface gráfica: `PySide6>=6.6` (`requirements-gui.txt`).
 - `pefile` é opcional: sem ele o programa continua importável, mas a análise estática de PE fica
   limitada (sem seções, imports, entropia e fabricante).
+- `requests` é opcional: consulta de reputação por hash, desligada por padrão.
 
 ## Instalação
 
@@ -23,11 +25,26 @@ O projeto está na **Etapa 2.2 (hardening do núcleo)**.
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
+# Para usar a interface gráfica:
+python -m pip install -r requirements-gui.txt
 ```
 
-Dependências futuras de GUI e integrações opcionais estão em `requirements-gui.txt`; dependências
-de desenvolvimento estão em `requirements-dev.txt` (a suíte usa apenas `unittest` da biblioteca
-padrão).
+As dependências de desenvolvimento estão em `requirements-dev.txt`; a suíte usa apenas `unittest`
+da biblioteca padrão.
+
+## Executar a interface
+
+```powershell
+python -m sentinel
+```
+
+A janela abre com dez telas reais: Dashboard, Scanner, Processos, Rede, Inicialização, Quarentena,
+Limpeza, Defender, Histórico e Configurações. Preferências da GUI são gravadas em
+`data/gui_settings.json` (JSON atômico, sem Registro). Idioma é fixo em `pt-BR`.
+
+Operações demoradas rodam em `QThread` com progresso, cancelamento cooperativo e sinais Qt; nenhuma
+tela atualiza widgets de fora da thread principal. Ações destrutivas ou reversíveis exigem
+confirmação explícita, e a interface nunca desativa proteções do Defender nem cria/remove exclusões.
 
 ## Executar os testes
 
@@ -35,8 +52,11 @@ padrão).
 python -m unittest discover -s tests -v
 ```
 
-Os testes usam somente arquivos sintéticos e diretórios temporários. Eles **não** alteram o
-Registro real, serviços, tarefas agendadas, exclusões do Defender nem executam malware.
+A suíte completa valida **158 testes (3 ignorados)**: os 145 testes anteriores mais 13 testes da
+GUI. Os testes de interface usam `QT_QPA_PLATFORM=offscreen`, um único `QApplication`, dublês do
+núcleo e diretórios temporários. Eles **não** alteram o Registro real, serviços, tarefas agendadas,
+exclusões do Defender, limpeza real nem executam malware. Também não abrem um loop de eventos real:
+o entrypoint é testado com `app.exec()` interceptado.
 
 ## Estrutura
 
@@ -48,7 +68,8 @@ data/        banco, chaves e listas locais (não versionar dados de execução)
 quarantine/  arquivos .qz criptografados (conteúdo não versionado)
 logs/        logs de execução (não versionados)
 reports/     relatórios gerados (não versionados)
-gui/         reservado para a etapa futura; não implementado nesta etapa
+gui/         interface PySide6: 10 telas, componentes, workers assíncronos, contexto, temas e preferências
+sentinel/    ponto de entrada `python -m sentinel`
 ```
 
 ### Módulos principais
@@ -68,6 +89,40 @@ gui/         reservado para a etapa futura; não implementado nesta etapa
 | `core/malware_detection.py` | Correlação entre processos, rede, inicialização, registro e arquivos |
 | `core/defender.py` | Integração somente leitura com o Microsoft Defender |
 | `core/cleanup.py` | Limpeza conservadora com allowlist, idade mínima e proteção de documentos |
+| `gui/context.py` | Único ponto de integração entre telas e núcleo; permite dublês nos testes |
+| `gui/views/` | Dez telas reais; nenhuma placeholder permanece registrada |
+| `gui/workers/` | Tarefas em `QThread` com progresso, cancelamento e tratamento de erro |
+| `gui/settings.py` | Preferências persistentes em JSON com normalização e escrita atômica |
+
+## Interface gráfica
+
+- **Dashboard:** resumo do banco, avaliação de proteção e status do Defender; mostra “Protegido”
+  somente quando varredura e Defender confirmam proteção. Caso contrário, o estado é rebaixado para
+  “Verificando”/alerta — lista vazia ou resposta ausente nunca é veredito.
+- **Scanner:** varredura rápida/completa/personalizada com progresso, cancelamento e resultados.
+  `known_hash` é apresentado como “Assinatura confirmada”; Authenticode válido é “Heurística
+  (assinado)”. Pastas e exclusões vêm das Configurações e chegam ao núcleo por `exclude_paths`.
+- **Processos e Rede:** leitura assíncrona com indicadores e correlação; encerramento passa pelo
+  núcleo, exige confirmação e valida reuso de PID.
+- **Inicialização:** entradas reais de Run/RunOnce, Startup, serviços e tarefas. Alterações são
+  reversíveis e confirmadas, com backup quando aplicável; drivers nunca são alterados.
+- **Quarentena:** busca, filtros por estado, ordenação e detalhes. Restauração permite escolher
+  destino/sobrescrita; exclusão definitiva exige confirmação com reconhecimento. A GUI nunca lê
+  arquivos `.qz` diretamente — tudo passa por `core/quarantine.py`.
+- **Limpeza:** categorias fornecidas por `cleanup.build_categories()`, estimativa e prévia
+  individual. Somente os caminhos marcados são enviados ao núcleo em `only_paths`; a Lixeira nunca
+  é incluída por padrão e exige reconhecimento adicional. Espaço estimado e espaço realmente
+  liberado são campos distintos.
+- **Defender:** disponibilidade, proteção, tempo real, adulteração, definições, ameaças,
+  exclusões somente leitura e outros produtos. Permite consultar estado, atualizar definições e
+  executar verificações rápida/completa; nunca desativa proteções nem altera exclusões. Consultas
+  não são registradas no banco porque o núcleo não as registra.
+- **Histórico:** eventos reais de varreduras, detecções, quarentena, restaurações, exclusões,
+  limpezas e ações de inicialização/processos/Registro. Filtros por categoria/período/busca, ordem
+  cronológica e carregamento incremental; nenhum evento é inventado.
+- **Configurações:** tema, notificações não críticas, confirmação ao fechar durante operações,
+  `scan_workers`, `cpu_limit`, pastas da varredura, exclusões e `log_level`. Todas as opções
+  exibidas têm efeito verificável; não há opções decorativas nem escolha de idioma.
 
 ## Modelo de segurança
 
@@ -135,13 +190,18 @@ q.restore(item_id)              # restaura com verificação
 - **Defender:** depende do PowerShell/Defender instalados; outro antivírus pode assumir a proteção.
   Não há verificação de malware real nesta etapa.
 - **Limpeza:** conservadora por projeto; pode deixar resíduos em vez de arriscar arquivos do usuário.
+- **Interface:** validada em modo `offscreen`, nas resoluções 1366×768, 1280×720 e 1920×1080, com
+  escalas aproximadas por fonte em 100/125/150%. A escala real do Windows depende do DPI do monitor e
+  ainda não foi medida em matriz manual Windows 10/11. ACLs/atributos de quarentena são
+  *best-effort*; a GUI não afirma preservação garantida. Não há executável empacotado.
 
 ## Inteligência de assinaturas
 
 `data/signatures/` está vazio. A arquitetura proposta (sem baixar amostras reais e sem inventar
 hashes) está descrita no `RELATORIO_ETAPA_2_2.md`, seção 7: hashes SHA-256 com metadados, origem e
 confiabilidade, versionamento, atualização assinada, verificação de integridade e desativação de
-listas obsoletas. Nenhum mecanismo de atualização externa foi implementado nesta etapa.
+listas obsoletas. Nenhum mecanismo de atualização externa foi implementado. O detalhamento da
+Etapa 3 (fases A–H, arquivos, testes e decisões de segurança) está em `RELATORIO_ETAPA_3.md`.
 
 ## Aviso
 

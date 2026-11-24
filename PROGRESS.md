@@ -2,13 +2,14 @@
 
 Atualizado em: 2026-11-24
 Etapa atual: **3 — interface gráfica com PySide6**
-Interface gráfica: **em desenvolvimento por fases (Fases A, B, C, D, E, F e G concluídas)**
+Interface gráfica: **concluída (Fases A, B, C, D, E, F, G e H)**
 Executável: **fora do escopo desta etapa**
 
 ## Estado real
 
 - O núcleo é importável e executável no ambiente de desenvolvimento (Python 3.14, Windows).
-- A suíte automatizada passa: **145 testes, OK (3 ignorados)** na última execução.
+- A suíte automatizada passa: **158 testes, OK (3 ignorados)** na última execução
+  (145 do núcleo/segurança + 13 da GUI).
 - Nenhum teste usa malware real, limpeza real do sistema, alteração real do Registro, de serviços,
   de tarefas agendadas ou de exclusões do Defender.
 - O projeto **não** está pronto para uso real/produção. A validação em cenários reais e em uma
@@ -205,6 +206,36 @@ Arquivos criados nesta fase: `gui/views/settings_view.py`. Modificados: `core/lo
 `gui/views/startup_view.py`, `gui/views/quarantine_view.py`, `gui/views/defender_view.py` e
 `gui/views/cleanup_view.py`.
 
+## Etapa 3 — Fase H (concluída)
+
+Auditoria final, testes versionados da GUI, documentação e encerramento da Etapa 3.
+
+- [x] `tests/test_gui.py` criado com 13 testes: um único `QApplication` em modo `offscreen`,
+      diretórios temporários e dublês do núcleo. Nenhum teste usa malware real, limpeza real,
+      Registro/serviços/tarefas reais nem exclusões reais do Defender.
+- [x] Cobertura: dez telas reais e nenhuma `PlaceholderView`; navegação nas resoluções 1366×768,
+      1280×720 e 1920×1080 com escalas aproximadas de 100/125/150% por fonte; gravação/recarga e
+      normalização das preferências; aplicação de tema e nível de log em tempo real; notificações
+      críticas vs. não críticas; compartilhamento de pastas/exclusões com o Scanner; invalidação
+      do Dashboard; confirmações obrigatórias de quarentena/limpeza; `only_paths` da limpeza;
+      filtros/paginação do histórico; `exclude_paths` real do Scanner; cancelamento cooperativo;
+      shutdown sem threads vivas; consultas do Defender sem registro e operações confirmadas
+      registradas; entrypoint `python -m sentinel` com `app.exec()` interceptado.
+- [x] Auditoria de threads: `Worker`/`TaskManager` usam QThread + sinais Qt; `shutdown()` cancela e
+      aguarda as threads vivas. Nenhuma tela manipula widgets de fora da thread principal.
+- [x] Auditoria de banco: todas as telas leem/escrevem por `Database`/`AppContext`; consultas do
+      Defender não são inventadas no histórico; operações confirmadas são registradas pelo núcleo.
+- [x] Correção aditiva em `gui/settings.py`: listas de caminhos ignoram `None`/vazios e valores
+      booleanos em texto (`"false"`, `"true"`, `sim`/`não`) são normalizados corretamente.
+- [x] Documentação final: `README.md` atualizado com GUI real, `python -m sentinel`, testes,
+      estrutura, segurança e limitações; `requirements-gui.txt` sem menção a etapa futura;
+      `RELATORIO_ETAPA_3.md` criado com fases A–H, arquivos, decisões, testes e limitações.
+- [x] Validação final: `py -3 -m compileall -q gui core database sentinel tests` com saída vazia e
+      `py -3 -m unittest discover -s tests`: **Ran 158 tests — OK (skipped=3)**.
+
+Arquivos modificados nesta fase: `gui/settings.py`, `README.md`, `requirements-gui.txt`,
+`PROGRESS.md`. Arquivos criados: `tests/test_gui.py`, `RELATORIO_ETAPA_3.md`.
+
 ## Concluído na Etapa 2.2
 
 ### P0 — Quarentena
@@ -241,7 +272,7 @@ Arquivos criados nesta fase: `gui/views/settings_view.py`. Modificados: `core/lo
 
 - [x] `.gitignore` para `__pycache__`, logs, banco, chaves, backups, quarentena e relatórios.
 - [x] `__pycache__` e `logs/sentinel.log` removidos do índice do Git (arquivos preservados no disco).
-- [x] `requirements.txt` do núcleo; `requirements-dev.txt`; `requirements-gui.txt` (futuro).
+- [x] `requirements.txt` do núcleo; `requirements-dev.txt`; `requirements-gui.txt` (Etapa 3).
 - [x] `README.md` com instalação, arquitetura, segurança, uso e limitações.
 - [x] `PROGRESS.md` com o estado real.
 - [x] Proposta de arquitetura de assinaturas no relatório final (sem implementar download/updates).
@@ -249,13 +280,12 @@ Arquivos criados nesta fase: `gui/views/settings_view.py`. Modificados: `core/lo
 ## Pendente / não validado
 
 - [ ] Matriz manual em Windows 10 e Windows 11, com usuário padrão e administrador.
+- [ ] Medição real das escalas DPI 100/125/150% em Windows (o teste offscreen aproxima por fonte).
 - [ ] Validação manual das consultas reais ao Defender em máquina com outro antivírus ativo.
 - [ ] Validação manual de serviços/tarefas reais em ambiente descartável (os testes usam mocks).
 - [ ] Teste de symlink em ambiente com privilégio de criação (o ambiente atual ignora esse teste).
 - [ ] Teste com disco realmente cheio e arquivo bloqueado por outro processo (simulados por mock).
 - [ ] Revisão de desempenho em volumes grandes e em unidades de rede/nuvem.
-- [ ] Fase H: testes GUI versionados, auditoria final de threads/banco/responsividade e
-      documentação final (`README.md`, `RELATORIO_ETAPA_3.md`).
 - [ ] Empacotamento em executável (etapa futura).
 - [ ] Mecanismo de atualização de assinaturas (apenas proposto, não implementado).
 
@@ -263,7 +293,6 @@ Arquivos criados nesta fase: `gui/views/settings_view.py`. Modificados: `core/lo
 
 1. Validar manualmente o núcleo em VM Windows 10/11 descartável, com e sem administrador.
 2. Revisar os tempos de varredura e a amostragem de CPU/GPU em hardware real.
-3. Concluir a Fase H (auditoria/testes/documentação) da Etapa 3, consumindo a API do núcleo
-   sem duplicar regras de segurança.
+3. Medir a escala DPI real e repetir a navegação em máquina Windows com monitor 125/150%.
 4. Definir e implementar o formato de assinaturas com assinatura digital e atualização segura,
    conforme a proposta do relatório.
