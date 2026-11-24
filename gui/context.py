@@ -55,6 +55,9 @@ class AppContext:
 
     @property
     def quarantine(self) -> Quarantine | None:
+        override = self._override("quarantine")
+        if override is not None:
+            return override
         if self._quarantine is None and self.quarantine_error is None and self._db is not None:
             try:
                 self._quarantine = Quarantine(self._db, self._quarantine_dir)

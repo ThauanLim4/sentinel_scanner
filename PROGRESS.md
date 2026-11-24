@@ -1,8 +1,8 @@
 # PROGRESSO — Sentinel Scanner
 
-Atualizado em: 2026-11-06
+Atualizado em: 2026-11-24
 Etapa atual: **3 — interface gráfica com PySide6**
-Interface gráfica: **em desenvolvimento por fases (Fases A, B, C e D concluídas)**
+Interface gráfica: **em desenvolvimento por fases (Fases A, B, C, D e E concluídas)**
 Executável: **fora do escopo desta etapa**
 
 ## Estado real
@@ -110,6 +110,37 @@ Arquivos criados nesta fase: `gui/views/processes_view.py`, `gui/views/network_v
 `gui/views/startup_view.py`, `gui/workers/startup_worker.py`. `gui/context.py` ganhou
 `startup_manager()`; `gui/workers/process_worker.py` passou a aceitar modo rápido/profundo.
 
+## Etapa 3 — Fase E (concluída)
+
+Telas de Quarentena e Windows Defender com dados reais do núcleo e do banco.
+
+- [x] **Quarentena**: listagem de todas as fases (`pending`/`ready`/`restoring`/`deleting`/
+      `quarantined`/`restored`/`deleted`/`failed`) por uma extensão aditiva de
+      `Quarantine.list_items(status=None)`; busca por nome/caminho/ID/hash, filtro por estado,
+      ordenação por data/nome/tamanho, detalhes, métricas e atualização automática após operações.
+- [x] Restauração e exclusão definitiva exigem confirmação na tela **e** `confirmed=True` na
+      fábrica do worker; destino informado pelo usuário quando o original não está disponível,
+      aviso explícito de sobrescrita e resultado anunciado somente após a resposta do núcleo.
+      Nenhum arquivo `.qz`, chave ou journal é manipulado pela interface.
+- [x] **Defender**: disponibilidade, antivírus, tempo real, adulteração (quando informado),
+      versão/idade das definições, último scan rápido/completo, mensagens do núcleo, outros
+      produtos, ameaças e histórico em abas separadas, exclusões somente leitura e aviso de
+      acesso restrito. Lista vazia/resposta ausente é exibida como ausência de dados.
+- [x] Ações permitidas: consultar estado, atualizar definições, verificações rápida/completa e
+      consultar resultados/exclusões, todas em `QThread` com progresso e cancelamento.
+      Nenhuma proteção é desativada e nenhuma exclusão é criada/removida.
+- [x] Atualização e verificações são registradas em `actions` somente com o resultado real
+      confirmado pelo núcleo; falha ao gravar é avisada sem alterar o resultado da operação.
+- [x] Validação offscreen com quarentena e Defender simulados: 10 telas registradas (5 restantes
+      ainda placeholders), filtros, confirmação recusada/aceita, restauração, exclusão, estado,
+      atualização, scan rápido, resultados, exclusões restritas e troca de tema.
+- [x] Suíte existente preservada: **145 testes, OK (3 ignorados)** (`py -3 -m unittest discover -s tests`).
+
+Arquivos criados nesta fase: `gui/views/quarantine_view.py`, `gui/views/defender_view.py`.
+Modificados: `gui/views/__init__.py`, `gui/workers/quarantine_worker.py`,
+`gui/workers/defender_worker.py`, `gui/context.py`, `gui/formatting.py` e
+`core/quarantine.py` (apenas assinatura aditiva de `list_items`).
+
 ## Concluído na Etapa 2.2
 
 ### P0 — Quarentena
@@ -159,7 +190,7 @@ Arquivos criados nesta fase: `gui/views/processes_view.py`, `gui/views/network_v
 - [ ] Teste de symlink em ambiente com privilégio de criação (o ambiente atual ignora esse teste).
 - [ ] Teste com disco realmente cheio e arquivo bloqueado por outro processo (simulados por mock).
 - [ ] Revisão de desempenho em volumes grandes e em unidades de rede/nuvem.
-- [ ] Implementação da GUI (etapa futura).
+- [ ] Implementação das telas de Limpeza, Histórico e Configurações (Fases F e G).
 - [ ] Empacotamento em executável (etapa futura).
 - [ ] Mecanismo de atualização de assinaturas (apenas proposto, não implementado).
 
@@ -167,6 +198,7 @@ Arquivos criados nesta fase: `gui/views/processes_view.py`, `gui/views/network_v
 
 1. Validar manualmente o núcleo em VM Windows 10/11 descartável, com e sem administrador.
 2. Revisar os tempos de varredura e a amostragem de CPU/GPU em hardware real.
-3. Só então iniciar a GUI, consumindo a API do núcleo sem duplicar regras de segurança.
+3. Concluir as Fases F (Limpeza/Histórico), G (Configurações/integração) e H (auditoria/testes)
+   da Etapa 3, consumindo a API do núcleo sem duplicar regras de segurança.
 4. Definir e implementar o formato de assinaturas com assinatura digital e atualização segura,
    conforme a proposta do relatório.

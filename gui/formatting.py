@@ -23,6 +23,9 @@ ACTION_LABELS = {
     "restore_failed": "Falha na restauração",
     "restore_pending": "Restauração pendente",
     "restore_recover": "Recuperação da restauração",
+    "defender_update": "Atualização de definições do Defender",
+    "defender_scan_quick": "Verificação rápida do Defender",
+    "defender_scan_full": "Verificação completa do Defender",
     "process_terminate": "Encerramento de processo",
     "cleanup_delete": "Limpeza de arquivo",
     "cleanup_recycle": "Esvaziamento da Lixeira",
@@ -116,6 +119,31 @@ def risk_order(risk: str) -> int:
 
 def action_label(action: str) -> str:
     return ACTION_LABELS.get(str(action), str(action).replace("_", " ").title())
+
+
+QUARANTINE_STATUS = {
+    "quarantined": ("Isolado", "danger"),
+    "pending": ("Pendente", "warning"),
+    "ready": ("Pronto", "warning"),
+    "restoring": ("Restaurando", "accent"),
+    "deleting": ("Excluindo", "accent"),
+    "restored": ("Restaurado", "safe"),
+    "deleted": ("Excluído", "gray"),
+    "failed": ("Falhou", "danger"),
+}
+STATUS_LEVEL_COLORS = {
+    "safe": "#22c55e", "warning": "#f59e0b", "danger": "#ef4444",
+    "accent": "#38bdf8", "gray": "#919bb0",
+}
+
+
+def quarantine_status(status: str) -> tuple[str, str]:
+    """Rótulo e nível visual de um estado real do banco de quarentena."""
+    return QUARANTINE_STATUS.get(str(status), (str(status or "Desconhecido"), "gray"))
+
+
+def status_color(level: str) -> str:
+    return STATUS_LEVEL_COLORS.get(str(level), STATUS_LEVEL_COLORS["gray"])
 
 
 def short_hash(value: str, size: int = 16) -> str:

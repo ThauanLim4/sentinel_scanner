@@ -5,9 +5,11 @@ from ..components.sidebar import NAV_ITEMS
 from ..context import AppContext
 from .base_view import BaseView
 from .dashboard_view import DashboardView
+from .defender_view import DefenderView
 from .network_view import NetworkView
 from .placeholder_view import PlaceholderView
 from .processes_view import ProcessesView
+from .quarantine_view import QuarantineView
 from .scanner_view import ScannerView
 from .startup_view import StartupView
 
@@ -38,6 +40,10 @@ def build_views(context: AppContext) -> dict[str, BaseView]:
             views[key] = NetworkView(context)
         elif key == "startup":
             views[key] = StartupView(context)
+        elif key == "quarantine":
+            views[key] = QuarantineView(context)
+        elif key == "defender":
+            views[key] = DefenderView(context)
         else:
             views[key] = PlaceholderView(context, key, title, SUBTITLES.get(key, ""))
     return views

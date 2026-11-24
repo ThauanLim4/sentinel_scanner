@@ -729,5 +729,10 @@ class Quarantine:
         self.db.log_action("quarantine_delete", rec.get("original_path", ""), f"id={qid}", True)
         log.info("Item de quarentena removido definitivamente: %s", qid)
 
-    def list_items(self):
-        return self.db.list_quarantine()
+    def list_items(self, status: str | None = None):
+        """Lista itens do banco. ``status=None`` inclui todas as fases/estados.
+
+        A listagem é somente leitura: a recuperação de operações interrompidas
+        continua sendo feita apenas por ``recover()``.
+        """
+        return self.db.list_quarantine(status=status)
