@@ -1,8 +1,8 @@
 # PROGRESSO — Sentinel Scanner
 
 Atualizado em: 2026-11-06
-Etapa atual: **2.2 — hardening, correções e validação do núcleo**
-Interface gráfica: **fora do escopo desta etapa**
+Etapa atual: **3 — interface gráfica com PySide6**
+Interface gráfica: **em desenvolvimento por fases (Fases A, B, C e D concluídas)**
 Executável: **fora do escopo desta etapa**
 
 ## Estado real
@@ -13,6 +13,102 @@ Executável: **fora do escopo desta etapa**
   de tarefas agendadas ou de exclusões do Defender.
 - O projeto **não** está pronto para uso real/produção. A validação em cenários reais e em uma
   matriz de Windows 10/11 com e sem administrador ainda é necessária.
+
+## Etapa 3 — Fase A (concluída)
+
+Fundação da interface: tema, componentes reutilizáveis, janela principal, sidebar e navegação.
+
+- [x] Tema escuro/claro parametrizado por paleta, com QSS único e tokens corrigidos.
+- [x] Componentes: cartões, métricas, status de proteção, tabela ordenável, estado vazio,
+      confirmação explícita, detalhes, notificações (histórico + toast) e ícones SVG próprios.
+- [x] Sidebar com as 10 seções, ícones, agrupamento visual e indicação da página ativa.
+- [x] Cabeçalho com título da página, estado do sistema, notificações e versão.
+- [x] Contexto da aplicação com banco, configurações, quarentena e fábricas do núcleo.
+- [x] Infraestrutura assíncrona `QThread`/`QObject` com progresso, cancelamento, erro e
+      encerramento controlado; nenhuma atualização de widget fora da thread principal.
+- [x] Janela principal com navegação sem recarregar a aplicação, adaptação a resoluções e
+      confirmação ao fechar durante operação.
+- [x] Ponto de entrada único: `python -m sentinel` (`gui/app.py` + `sentinel/__main__.py`).
+- [x] Validação offscreen: criação do banco, 10 telas registradas, navegação e troca de tema.
+- [x] Suíte existente preservada: **145 testes, OK (3 ignorados)**.
+
+Arquivos criados nesta fase: `gui/context.py`, `gui/main_window.py`, `gui/app.py`,
+`gui/workers/base.py` e `gui/workers/{scan,process,network,cleanup}_worker.py`,
+`gui/components/{common,sidebar,header,status_card,metric_card,data_table,confirmation_dialog,detail_dialog,notification}.py`,
+`gui/views/{base_view,placeholder_view}.py`, `sentinel/{__init__,__main__}.py`.
+As telas ainda são placeholders e serão substituídas nas fases seguintes.
+
+## Etapa 3 — Fase B (concluída)
+
+Dashboard funcional integrado ao banco local, ao Windows Defender e ao analisador de processos.
+
+- [x] `evaluate_protection()` puro e testável: só declara **protegido** quando a última
+      varredura terminou sem detecções **e** o Defender respondeu com tempo real ativo e
+      definições atualizadas. Informação ausente rebaixa para **Verificando**.
+- [x] Dados locais reais: resumo agregado, varredura mais recente, detecções e auditoria.
+- [x] Consulta ao Defender e contagem de processos em threads próprias, com *cache* curto,
+      proteção contra sondas duplicadas e atualização apenas na thread principal.
+- [x] Cartão de proteção com estado, motivo, última varredura, ameaças, quarentena e Defender.
+- [x] Métricas de varreduras, arquivos verificados, detecções, quarentena e processos ativos.
+- [x] Tabelas de detecções e atividade recente, com estado vazio explícito e detalhes por linha.
+- [x] Ações de varredura rápida, atualização, quarentena e histórico; banner de erro/aviso.
+- [x] Nenhuma operação destrutiva é executada pelo Dashboard; nenhum resultado é inventado.
+- [x] Validação offscreen com banco temporário e serviços simulados (Defender e processos):
+      estados protegido/atenção/risco/verificando, métricas, tabelas, banner e troca de tema.
+
+Arquivos criados nesta fase: `gui/views/dashboard_view.py`, `gui/workers/defender_worker.py`.
+`gui/workers/process_worker.py` ganhou a contagem rápida usada pelo Dashboard.
+
+## Etapa 3 — Fase C (concluída)
+
+Tela de Scanner com execução assíncrona, progresso real, cancelamento e resultados auditáveis.
+
+- [x] Varreduras rápida, completa e personalizada (pastas selecionadas e persistidas em JSON).
+- [x] Execução em `QThread`; progresso (fase, arquivo atual, contadores e tempo), cancelamento
+      cooperativo e encerramento sem atualizar widgets fora da thread principal.
+- [x] Resultados lidos do banco após a confirmação do núcleo; nada é exibido como concluído
+      antes disso. Falhas do núcleo viram banner, notificação e estado "Falhou".
+- [x] Distinção explícita entre **heurística** e **assinatura confirmada** (hash na base local);
+      assinatura Authenticode válida é mostrada como redutora de falso positivo, não como veredito.
+- [x] O Scanner não remove arquivos automaticamente. A única ação destrutiva é "Isolar em
+      quarentena", com confirmação explícita + reconhecimento e execução via `core/quarantine.py`.
+- [x] Filtros por risco/origem e busca por caminho/categoria; detalhes com evidências.
+- [x] Estados vazios, resultados parciais de varredura cancelada e aviso de que a ausência de
+      detecções não garante proteção.
+- [x] Validação offscreen com scanner e quarentena simulados: sucesso, filtro, quarentena,
+      cancelamento, varredura personalizada sem pastas e erro do núcleo.
+
+Arquivos criados nesta fase: `gui/views/scanner_view.py`, `gui/workers/quarantine_worker.py`.
+
+## Etapa 3 — Fase D (concluída)
+
+Telas de Processos, Rede e Inicialização, com leitura assíncrona e ações confirmadas.
+
+- [x] **Processos**: lista com PID, nome, risco, CPU, RAM, usuário e caminho; análise rápida por
+      padrão e **análise profunda opcional** (binários e assinaturas); busca e filtros por risco;
+      detalhes com evidências; encerramento somente após confirmação + reconhecimento, executado
+      por `ProcessAnalyzer.terminate(..., confirmed=True)`. Processos críticos têm a ação
+      desabilitada e o núcleo ainda recusa serviços do Windows e PIDs reutilizados.
+- [x] **Rede**: conexões ativas (processo, PID, protocolo, local, remoto, estado, destino externo)
+      e indicadores do `NetworkAnalyzer` em abas separadas; métricas; busca; filtro de conexões
+      externas e de risco; detalhes com as conexões correlacionadas. Nenhuma conexão é bloqueada
+      automaticamente e a ausência de dados por falta de permissão é exibida explicitamente.
+- [x] **Inicialização**: análise assíncrona de Registro, pastas, serviços, tarefas e drivers, com
+      análise profunda e cancelamento cooperativo (o resultado é descartado ao final); filtros por
+      tipo/risco; detalhes com evidências. Desativar/reativar sempre exige confirmação e executa
+      via `StartupManager`; itens críticos usam `confirm_critical=True`, drivers são recusados e
+      entradas RunOnce/políticas removidas do Registro não oferecem reativação.
+- [x] Nenhum widget é atualizado fora da thread principal. Erros do núcleo viram banner,
+      notificação e estado "Falhou"; estados vazios diferenciam ausência de dados de ausência de
+      ameaças.
+- [x] Validação offscreen com processos, rede e inicialização simulados: filtros, detalhes,
+      encerramento confirmado, recusa de processo crítico, conexões externas, indicadores,
+      desativação/reativação, confirmação crítica, remoção de RunOnce e erros do núcleo.
+- [x] Suíte existente mantida: **145 testes, OK (3 ignorados)**.
+
+Arquivos criados nesta fase: `gui/views/processes_view.py`, `gui/views/network_view.py`,
+`gui/views/startup_view.py`, `gui/workers/startup_worker.py`. `gui/context.py` ganhou
+`startup_manager()`; `gui/workers/process_worker.py` passou a aceitar modo rápido/profundo.
 
 ## Concluído na Etapa 2.2
 

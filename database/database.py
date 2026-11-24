@@ -91,6 +91,25 @@ class Database:
     def set_finding_status(self, finding_id: int, status: str):
         self._exec("UPDATE findings SET status=? WHERE id=?", (status, finding_id))
 
+    # --- resumo para o dashboard -----------------------------------------
+    def summary(self) -> dict:
+        """Resumo agregado (somente leitura) usado pela interface."""
+        row = self._query(
+            "SELECT COUNT(*) AS scans, COALESCE(SUM(files_scanned),0) AS files, "
+            "COALESCE(MAX(processes_scanned),0) AS processes FROM scans")[0]
+        findings = self._query("SELECT COUNT(*) AS n FROM findings")[0]["n"]
+        quarantined = self._query(
+            "SELECT COUNT(*) AS n FROM quarantine WHERE status='quarantined'")[0]["n"]
+        latest = self._query("SELECT * FROM scans ORDER BY id DESC LIMIT 1")
+        latest = latest[0] if latest else None
+        latest_findings = 0
+        if latest:
+            latest_findings = self._query(
+                "SELECT COUNT(*) AS n FROM findings WHERE scan_id=?", (latest["id"],))[0]["n"]
+        return {"scans": row["scans"], "files": row["files"], "processes": row["processes"],
+                "findings": findings, "quarantined": quarantined,
+                "latest_scan": latest, "latest_findings": latest_findings}
+
     # --- ações (auditoria) ------------------------------------------------
     def log_action(self, action: str, target: str, detail: str = "", success: bool = True):
         self._exec("INSERT INTO actions(ts,action,target,detail,success) VALUES(?,?,?,?,?)",

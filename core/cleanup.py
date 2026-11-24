@@ -171,6 +171,20 @@ def estimate(cat: Category) -> tuple[int, int]:
     return total, count
 
 
+def list_files(cat: Category, limit: int | None = None) -> list[dict]:
+    """Lista os arquivos que ``clean(cat)`` poderia remover, sem alterar nada.
+
+    É somente leitura e usa exatamente o mesmo filtro de segurança de :func:`clean`
+    (idade mínima, extensões pessoais, links e raízes permitidas).
+    """
+    out: list[dict] = []
+    for path, size, root in _iter_files(cat):
+        out.append({"path": str(path), "size": size, "root": str(root)})
+        if limit is not None and len(out) >= limit:
+            break
+    return out
+
+
 def _maintenance_roots() -> list[Path]:
     """Raízes de manutenção do Windows onde a limpeza é permitida, mesmo sendo
     áreas protegidas. É uma lista FECHADA: uma `Category` forjada apontando para

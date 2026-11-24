@@ -102,12 +102,14 @@ class Scanner:
 
     # --------------------------------------------------------------------- varredura
     def run(self, kind: str = "quick", paths: list | None = None,
-            progress: Callable[[ScanProgress], None] | None = None) -> ScanResult:
+            progress: Callable[[ScanProgress], None] | None = None,
+            exclude_paths: list | None = None) -> ScanResult:
         if kind not in ("quick", "full", "custom"):
             raise ValueError("kind deve ser quick, full ou custom")
         targets = [Path(p) for p in (paths or [])] if kind == "custom" else default_targets(kind)
         if kind == "custom" and not targets:
             raise ValueError("Informe ao menos um caminho para a varredura personalizada.")
+        excluded = [Path(p) for p in (exclude_paths or []) if p]
         self._cancel.clear()
         self._reset()
         scan_id = self.db.start_scan(kind, platform.platform())
@@ -129,7 +131,7 @@ class Scanner:
         try:
             for root in targets:
                 explicit = kind == "custom"
-                for path, size, mtime_ns in self._walk(root, explicit):
+                for path, size, mtime_ns in self._walk(root, explicit, excluded):
                     if self._cancel.is_set():
                         break
                     self.seen += 1
@@ -189,9 +191,13 @@ class Scanner:
     def _is_own(self, path: str) -> bool:
         return any(is_within(path, d) for d in self._own_dirs)
 
-    def _walk(self, root: Path, explicit: bool):
+    def _walk(self, root: Path, explicit: bool, excluded: list[Path] | None = None):
         """Gera (caminho, tamanho, mtime_ns) de candidatos. Não segue links/junctions e ignora
-        placeholders de nuvem (ler um arquivo do OneDrive 'sob demanda' dispararia um download)."""
+        placeholders de nuvem (ler um arquivo do OneDrive 'sob demanda' dispararia um download).
+        ``excluded`` contém caminhos configurados pelo usuário na interface."""
+        excluded = excluded or []
+        if any(is_within(root, ex) for ex in excluded):
+            return
         if root.is_file():
             try:
                 st = root.stat()
@@ -213,7 +219,7 @@ class Scanner:
             sensitive = explicit or any(m in norm(d) + "\\" for m in SENSITIVE_MARKERS)
             for e in entries:
                 try:
-                    if e.is_symlink():
+                    if e.is_symlink() or any(is_within(e.path, ex) for ex in excluded):
                         continue
                     if e.is_dir(follow_symlinks=False):
                         if e.name.lower() in config.SCAN_EXCLUDED_DIR_NAMES or is_reparse_point(Path(e.path)) \
